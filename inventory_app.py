@@ -3,8 +3,12 @@ import pandas as pd
 from datetime import datetime
 import io
 
-# 페이지 설정
-st.set_page_config(page_title="재고 관리 시스템", layout="wide")
+# 페이지 설정 (사이드바를 기본적으로 접힌 상태로 설정)
+st.set_page_config(
+    page_title="재고 관리 시스템", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
 # 스타일 설정 (화면 디자인 및 인쇄 최적화)
 st.markdown("""
@@ -13,23 +17,29 @@ st.markdown("""
     
     /* 인쇄 시 스타일 설정 */
     @media print {
-        header, .stSidebar, .no-print, [data-testid="stHeader"], .stTabs [role="tablist"] {
+        /* 사이드바, 헤더, 버튼 등 불필요한 요소 숨기기 */
+        header, .stSidebar, .no-print, [data-testid="stHeader"], .stTabs [role="tablist"], .stButton {
             display: none !important;
         }
+        /* 메인 컨텐츠 여백 제거 */
         .main .block-container {
             padding-top: 0 !important;
             padding-bottom: 0 !important;
+            margin: 0 !important;
         }
+        /* 인쇄용 테이블 스타일 */
         .print-table {
             width: 100%;
             border-collapse: collapse;
             font-size: 14px;
+            margin-top: 20px;
         }
         .print-table th, .print-table td {
-            border: 1px solid #333;
+            border: 1px solid #333 !important;
             padding: 12px 8px;
             text-align: center;
             vertical-align: middle;
+            color: black !important;
         }
         .print-table th {
             background-color: #f2f2f2 !important;
@@ -44,8 +54,8 @@ st.markdown("""
         }
         /* 실재고 기입란 높이 확보 */
         .physical-stock-cell {
-            width: 120px;
-            height: 50px;
+            width: 150px;
+            height: 60px;
         }
     }
     
@@ -157,8 +167,14 @@ with tab_print:
     st.subheader("🖨️ 재고 실사용 리포트")
     st.write("이미지, 시스템 재고가 포함된 리스트입니다. 실재고 칸은 출력 후 수기로 작성하세요.")
     
-    if st.button("📄 실사표 즉시 인쇄 (Print)"):
-        st.components.v1.html("<script>window.print();</script>", height=0)
+    # 인쇄 스크립트 수정 (부모 창을 타겟으로 호출)
+    if st.button("📄 실사표 즉시 인쇄 (Print)", key="print_btn"):
+        st.components.v1.html("""
+            <script>
+                window.parent.focus();
+                window.parent.print();
+            </script>
+        """, height=0)
 
     # 인쇄용 HTML 테이블 생성
     html_content = f"""
@@ -193,7 +209,7 @@ with tab_print:
     html_content += """
             </tbody>
         </table>
-        <div style="margin-top: 20px; text-align: right; font-size: 12px;">
+        <div style="margin-top: 20px; text-align: right; font-size: 12px; font-weight: bold;">
             확인자: ____________________ (인)
         </div>
     </div>
