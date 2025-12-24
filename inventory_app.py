@@ -95,9 +95,27 @@ def fetch_data():
                 df = conn.read(ttl=0) 
                 if df is not None:
                     df = df.dropna(how='all')
+                    
+                    # --- 컬럼명 표준화 (KeyError 방지) ---
+                    rename_map = {
+                        '이미지 URL': '이미지URL',
+                        '이미지 주소': '이미지URL',
+                        '초기 수량': '현재재고',
+                        '수량': '현재재고',
+                        '수정일': '최근수정일'
+                    }
+                    df = df.rename(columns=rename_map)
+                    
+                    # 필수 컬럼 존재 확인 및 수치 보정
+                    required_cols = ['SKU', '상품명', '이미지URL', '현재재고', '최근수정일']
+                    for col in required_cols:
+                        if col not in df.columns:
+                            df[col] = 0 if col == '현재재고' else ""
+                    
                     if '현재재고' in df.columns:
                         df['현재재고'] = pd.to_numeric(df['현재재고'], errors='coerce').fillna(0).astype(int)
-                    st.session_state.inventory = df.copy()
+                    
+                    st.session_state.inventory = df[required_cols].copy()
                     st.toast("✅ 동기화 완료!")
                     return True
                 else:
@@ -196,7 +214,9 @@ with tab_list:
             with st.container():
                 c_img, c_info, c_qty, c_btn = st.columns([1, 3, 2, 1])
                 with c_img:
-                    st.image(row['이미지URL'] if row['이미지URL'] else "https://via.placeholder.com/100", width=100)
+                    # 이미지URL 컬럼 안전하게 접근
+                    img_url = row['이미지URL'] if pd.notna(row['이미지URL']) and row['이미지URL'] != "" else "https://via.placeholder.com/100?text=No+Image"
+                    st.image(img_url, width=100)
                 with c_info:
                     st.subheader(row['상품명'])
                     st.caption(f"SKU: {row['SKU']} | 수정일: {row['최근수정일']}")
