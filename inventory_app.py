@@ -68,19 +68,32 @@ def get_connection():
     except: return None
 
 def fetch_data():
-    """INPUT 시트에서 원본 데이터를 불러옵니다."""
+    """INPUT 시트에서 원본 데이터를 불러옵니다. 이름 불일치에 대비한 방어 로직 포함."""
     conn = get_connection()
     if conn:
         try:
             with st.spinner("구글 시트(INPUT)에서 데이터를 불러오는 중..."):
-                # 원본 데이터가 있는 'INPUT' 워크시트에서 읽기
-                df = conn.read(worksheet="INPUT", ttl=0) 
+                # 1. 시도: 정확히 "INPUT"이라는 워크시트 읽기
+                # 라이브러리에 따라 worksheet 리스트를 먼저 가져와 유사 이름을 찾을 수도 있습니다.
+                try:
+                    df = conn.read(worksheet="INPUT", ttl=0)
+                except Exception:
+                    # 2. 실패 시: "input" (소문자) 또는 공백 포함 " INPUT " 등 유사 이름 시도
+                    # 만약 이것도 실패하면 에러를 던짐
+                    df = conn.read(worksheet="input", ttl=0)
+
                 if df is not None:
                     df = df.dropna(how='all')
                     # 컬럼명 앞뒤 공백 제거
                     df.columns = [str(c).strip() for c in df.columns]
                     
-                    # 필수 컬럼 보정
+                    # 필수 컬럼 보정 (사용자가 제시한 '이미지URL' 헤더 지원)
+                    rename_map = {
+                        '이미지URL': COL_IMG, '이미지 URL': COL_IMG, 'URL': COL_IMG,
+                        '현재재고': COL_QTY, '수량': COL_QTY, '재고': COL_QTY
+                    }
+                    df = df.rename(columns=rename_map)
+
                     for col in REQUIRED_COLS:
                         if col not in df.columns:
                             df[col] = 0 if col == COL_QTY else ""
@@ -91,7 +104,11 @@ def fetch_data():
                     return True
         except Exception as e:
             st.error(f"불러오기 실패: {e}")
-            st.info("💡 구글 시트에 'INPUT'이라는 이름의 탭이 있는지 확인하세요.")
+            st.info("""
+            **💡 해결 방법:**
+            1. 구글 시트 하단 탭 이름이 정확히 **INPUT** 인지 확인해 주세요. (공백이 있으면 안 됩니다.)
+            2. 시트의 첫 번째 줄(헤더)에 **SKU, 상품명, 이미지URL, 현재재고, 최근수정일**이 있는지 확인해 주세요.
+            """)
     return False
 
 def commit_data():
@@ -107,7 +124,7 @@ def commit_data():
                 st.rerun()
         except Exception as e:
             st.error(f"저장 실패: {e}")
-            st.info("💡 구글 시트에 'OUTPUT' 탭이 있는지, 서비스 계정에 '편집자' 권한이 있는지 확인하세요.")
+            st.info("💡 구글 시트에 **OUTPUT**이라는 이름의 탭이 이미 존재해야 저장할 수 있습니다.")
 
 # --- 메인 화면 ---
 st.title("🍎 스마트 재고 동기화 시스템")
@@ -152,10 +169,15 @@ with tab_input:
 with tab_output:
     search = st.text_input("🔍 검색 (명칭/SKU)", "")
     df = st.session_state.inventory
-    view_df = df[
-        df[COL_NAME].astype(str).str.contains(search, case=False, na=False) |
-        df[COL_SKU].astype(str).str.contains(search, case=False, na=False)
-    ].reset_index(drop=True)
+    
+    # 검색 필터링
+    if not df.empty:
+        view_df = df[
+            df[COL_NAME].astype(str).str.contains(search, case=False, na=False) |
+            df[COL_SKU].astype(str).str.contains(search, case=False, na=False)
+        ].reset_index(drop=True)
+    else:
+        view_df = pd.DataFrame()
 
     if view_df.empty:
         st.info("표시할 데이터가 없습니다. [INPUT 불러오기]를 눌러주세요.")
@@ -167,30 +189,35 @@ with tab_output:
         st.divider()
 
         for idx, row in view_df.iterrows():
-            real_idx = st.session_state.inventory.index[st.session_state.inventory[COL_SKU] == row[COL_SKU]][0]
-            with st.container():
-                c_img, c_info, c_qty = st.columns([1, 3, 2.5])
-                with c_img:
-                    url = row[COL_IMG]
-                    final_url = url if pd.notna(url) and str(url).startswith('http') else "https://via.placeholder.com/150?text=No+Image"
-                    st.image(final_url, width=100)
-                with c_info:
-                    st.subheader(row[COL_NAME])
-                    st.caption(f"SKU: {row[COL_SKU]} | 수정일: {row[COL_DATE]}")
-                with c_qty:
-                    st.write("") 
-                    q_col1, q_col2, q_col3 = st.columns([1, 1.5, 1])
-                    with q_col1:
-                        if st.button("➖", key=f"down_{row[COL_SKU]}", use_container_width=True):
-                            if row[COL_QTY] > 0:
-                                st.session_state.inventory.at[real_idx, COL_QTY] -= 1
+            # 실제 인벤토리에서 해당 상품 찾기
+            try:
+                real_idx = st.session_state.inventory.index[st.session_state.inventory[COL_SKU] == row[COL_SKU]][0]
+                with st.container():
+                    c_img, c_info, c_qty = st.columns([1, 3, 2.5])
+                    with c_img:
+                        url = row[COL_IMG]
+                        # 이미지 URL이 유효하지 않을 경우를 위한 처리
+                        final_url = url if pd.notna(url) and str(url).startswith('http') else "https://via.placeholder.com/150?text=No+Image"
+                        st.image(final_url, width=100)
+                    with c_info:
+                        st.subheader(row[COL_NAME])
+                        st.caption(f"SKU: {row[COL_SKU]} | 수정일: {row[COL_DATE]}")
+                    with c_qty:
+                        st.write("") 
+                        q_col1, q_col2, q_col3 = st.columns([1, 1.5, 1])
+                        with q_col1:
+                            if st.button("➖", key=f"down_{row[COL_SKU]}", use_container_width=True):
+                                if row[COL_QTY] > 0:
+                                    st.session_state.inventory.at[real_idx, COL_QTY] -= 1
+                                    st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
+                                    st.rerun()
+                        with q_col2:
+                            st.markdown(f'<div class="qty-text">{int(row[COL_QTY])}</div>', unsafe_allow_html=True)
+                        with q_col3:
+                            if st.button("➕", key=f"up_{row[COL_SKU]}", use_container_width=True):
+                                st.session_state.inventory.at[real_idx, COL_QTY] += 1
                                 st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
                                 st.rerun()
-                    with q_col2:
-                        st.markdown(f'<div class="qty-text">{int(row[COL_QTY])}</div>', unsafe_allow_html=True)
-                    with q_col3:
-                        if st.button("➕", key=f"up_{row[COL_SKU]}", use_container_width=True):
-                            st.session_state.inventory.at[real_idx, COL_QTY] += 1
-                            st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
-                            st.rerun()
-                st.divider()
+                    st.divider()
+            except Exception:
+                continue
