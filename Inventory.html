@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud Inventory Management</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Excel Parsing Library -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <!-- Firebase Libraries -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, deleteDoc, collection, onSnapshot, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Firebase Configuration from environment
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-inventory-app';
+
+        let inventory = [];
+        let user = null;
+
+        const itemForm = document.getElementById('itemForm');
+        const excelInput = document.getElementById('excelInput');
+        const inventoryList = document.getElementById('inventoryList');
+        const emptyState = document.getElementById('emptyState');
+        const itemCount = document.getElementById('itemCount');
+        const toast = document.getElementById('toast');
+        const syncStatus = document.getElementById('syncStatus');
+
+        // Feedback System
+        function showToast(message) {
+            toast.innerText = message;
+            toast.classList.remove('translate-y-20');
+            setTimeout(() => {
+                toast.classList.add('translate-y-20');
+            }, 3000);
+        }
+
+        // Auth Logic (Rule 3)
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth Error:", error);
+                showToast("인증 서버 연결에 실패했습니다.");
+            }
+        };
+
+        onAuthStateChanged(auth, (u) => {
+            user = u;
+            if (user) {
+                syncStatus.innerHTML = '<span class="flex h-2 w-2 rounded-full bg-green-500 mr-2"></span> 실시간 동기화 중';
+                startListening();
+            } else {
+                syncStatus.innerHTML = '<span class="flex h-2 w-2 rounded-full bg-red-500 mr-2"></span> 연결 끊김';
+            }
+        });
+
+        // Firestore Data Path (Rule 1)
+        const getInventoryCol = () => collection(db, 'artifacts', appId, 'public', 'data', 'inventory');
+
+        // Real-time Listener
+        function startListening() {
+            if (!user) return;
+            const q = getInventoryCol();
+            onSnapshot(q, (snapshot) => {
+                inventory = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                // Sort locally by timestamp or name (Rule 2)
+                inventory.sort((a, b) => (b.updatedAt?.seconds || 0) - (a.updatedAt?.seconds || 0));
+                renderInventory();
+            }, (error) => {
+                console.error("Sync Error:", error);
+                showToast("데이터 동기화 오류 발생");
+            });
+        }
+
+        // Add/Update Item in Cloud
+        async function saveItem(sku, name, image, quantity) {
+            if (!user) return;
+            const docId = sku.replace(/[^a-zA-Z0-9]/g, '_') + '_' + Date.now();
+            const dateStr = new Date().toISOString().split('T')[0];
+            
+            try {
+                await setDoc(doc(getInventoryCol(), docId), {
+                    sku,
+                    name,
+                    image: image || 'https://via.placeholder.com/60?text=No+Image',
+                    quantity: parseInt(quantity) || 0,
+                    history: [{ date: dateStr, change: parseInt(quantity), type: 'init', current: parseInt(quantity) }],
+                    updatedAt: serverTimestamp()
+                });
+            } catch (e) {
+                showToast("저장 실패");
+            }
+        }
+
+        // Update Stock Logic
+        window.updateStock = async (id, amount) => {
+            if (!user) return;
+            const item = inventory.find(i => i.id === id);
+            if (!item) return;
+
+            const newQuantity = Math.max(0, item.quantity + amount);
+            const dateStr = new Date().toISOString().split('T')[0];
+            
+            const newHistory = [...item.history];
+            newHistory.unshift({
+                date: dateStr,
+                change: amount,
+                type: amount > 0 ? 'in' : 'out',
+                current: newQuantity
+            });
+
+            try {
+                await setDoc(doc(getInventoryCol(), id), {
+                    ...item,
+                    quantity: newQuantity,
+                    history: newHistory.slice(0, 20),
+                    updatedAt: serverTimestamp()
+                }, { merge: true });
+            } catch (e) {
+                showToast("업데이트 실패");
+            }
+        };
+
+        // Delete Logic
+        window.deleteItem = async (id) => {
+            if (!user) return;
+            if (confirm('정말 삭제하시겠습니까?')) {
+                try {
+                    await deleteDoc(doc(getInventoryCol(), id));
+                    showToast("삭제되었습니다.");
+                } catch (e) {
+                    showToast("삭제 실패");
+                }
+            }
+        };
+
+        // Bulk Excel Logic
+        excelInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                try {
+                    const data = new Uint8Array(event.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const jsonData = XLSX.utils.sheet_to_json(sheet);
+
+                    showToast(`${jsonData.length}개 항목 업로드 시작...`);
+                    for (const row of jsonData) {
+                        const sku = row['SKU'] || row['sku'] || 'N/A';
+                        const name = row['상품명'] || row['name'] || '이름 없음';
+                        const image = row['이미지'] || row['image'] || '';
+                        const qty = parseInt(row['수량'] || row['quantity'] || 0);
+                        await saveItem(sku, name, image, qty);
+                    }
+                    showToast("벌크 업로드가 완료되었습니다.");
+                    excelInput.value = '';
+                } catch (error) {
+                    showToast('엑셀 처리 중 오류 발생');
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        // Form Submit
+        itemForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const sku = document.getElementById('sku').value;
+            const name = document.getElementById('name').value;
+            const image = document.getElementById('image').value;
+            const quantity = document.getElementById('quantity').value;
+            
+            await saveItem(sku, name, image, quantity);
+            itemForm.reset();
+            showToast("상품이 등록되었습니다.");
+        });
+
+        // UI Render
+        function renderInventory() {
+            if (inventory.length === 0) {
+                emptyState.style.display = 'block';
+                inventoryList.innerHTML = '';
+                itemCount.innerText = '총 0개 품목';
+                return;
+            }
+
+            emptyState.style.display = 'none';
+            itemCount.innerText = `총 ${inventory.length}개 품목`;
+            
+            inventoryList.innerHTML = inventory.map(item => `
+                <tr class="hover:bg-slate-50 transition-colors">
+                    <td class="px-6 py-4">
+                        <img src="${item.image}" alt="${item.name}" onerror="this.src='https://via.placeholder.com/60?text=No+Image'" class="w-12 h-12 rounded-lg object-cover bg-slate-100 border border-slate-200">
+                    </td>
+                    <td class="px-6 py-4 font-mono text-xs text-slate-600">${item.sku}</td>
+                    <td class="px-6 py-4">
+                        <div class="font-bold text-slate-900">${item.name}</div>
+                    </td>
+                    <td class="px-6 py-4">
+                        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-bold ${item.quantity < 5 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}">
+                            ${item.quantity.toLocaleString()} 개
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 no-print">
+                        <div class="flex items-center gap-1">
+                            <button onclick="updateStock('${item.id}', 1)" class="p-1 hover:bg-indigo-100 text-indigo-600 rounded transition-all">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                            </button>
+                            <button onclick="updateStock('${item.id}', -1)" class="p-1 hover:bg-red-100 text-red-600 rounded transition-all">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 12H4"></path></svg>
+                            </button>
+                            <button onclick="deleteItem('${item.id}')" class="p-1 hover:bg-slate-200 text-slate-400 rounded transition-all ml-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                            </button>
+                        </div>
+                    </td>
+                    <td class="px-6 py-4 text-xs">
+                        <div class="max-h-24 overflow-y-auto custom-scrollbar space-y-1">
+                            ${(item.history || []).map(h => `
+                                <div class="flex justify-between items-center text-slate-500 border-b border-slate-50 pb-1 pr-2">
+                                    <span class="font-mono text-[10px]">${h.date}</span>
+                                    <span class="${h.type === 'in' ? 'text-indigo-600 font-bold' : h.type === 'out' ? 'text-red-500 font-bold' : 'text-slate-400'}">
+                                        ${h.type === 'in' ? '+' : h.type === 'out' ? '-' : ''}${Math.abs(h.change)}
+                                    </span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        initAuth();
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
+        @media print { .no-print { display: none !important; } }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-6xl mx-auto container">
+        <!-- Header -->
+        <header class="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+            <div>
+                <h1 class="text-3xl font-bold text-slate-900">클라우드 재고 관리</h1>
+                <div id="syncStatus" class="flex items-center text-xs text-slate-500 mt-1 font-medium">
+                    <span class="flex h-2 w-2 rounded-full bg-slate-300 mr-2"></span> 연결 중...
+                </div>
+            </div>
+            <div class="flex gap-2 no-print">
+                <button onclick="window.print()" class="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg font-semibold flex items-center transition-all shadow-sm">
+                    리스트 인쇄
+                </button>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-8">
+            <div class="lg:col-span-1 no-print space-y-6">
+                <!-- Registration -->
+                <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <h2 class="text-xl font-bold mb-4 text-slate-800">상품 등록</h2>
+                    <form id="itemForm" class="space-y-4">
+                        <input type="text" id="sku" required class="w-full px-3 py-2 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" placeholder="SKU 코드">
+                        <input type="text" id="name" required class="w-full px-3 py-2 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" placeholder="상품명">
+                        <input type="url" id="image" class="w-full px-3 py-2 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" placeholder="이미지 URL">
+                        <input type="number" id="quantity" required min="0" class="w-full px-3 py-2 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" value="0">
+                        <button type="submit" class="w-full bg-slate-900 text-white py-2 rounded-lg font-bold hover:bg-slate-800 transition-all">등록하기</button>
+                    </form>
+                </div>
+
+                <!-- Excel Upload -->
+                <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <h2 class="text-xl font-bold mb-2 text-slate-800">엑셀 벌크 등록</h2>
+                    <p class="text-[10px] text-slate-500 mb-4">헤더: SKU, 상품명, 이미지, 수량</p>
+                    <input type="file" id="excelInput" accept=".xlsx, .xls, .csv" class="hidden">
+                    <button onclick="document.getElementById('excelInput').click()" class="w-full bg-indigo-50 border border-indigo-200 text-indigo-700 py-3 rounded-xl font-bold hover:bg-indigo-100 transition-all">
+                        엑셀 파일 불러오기
+                    </button>
+                </div>
+            </div>
+
+            <!-- List -->
+            <div class="lg:col-span-3">
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="p-6 border-b border-slate-100 flex justify-between items-center no-print">
+                        <h2 class="text-xl font-bold text-slate-800">실시간 재고 현황</h2>
+                        <span id="itemCount" class="bg-slate-100 text-slate-600 px-3 py-1 rounded-full text-xs font-semibold">총 0개 품목</span>
+                    </div>
+                    
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-slate-50 text-slate-600 text-sm">
+                                    <th class="px-6 py-4 border-b">이미지</th>
+                                    <th class="px-6 py-4 border-b">SKU</th>
+                                    <th class="px-6 py-4 border-b">상품명</th>
+                                    <th class="px-6 py-4 border-b">재고</th>
+                                    <th class="px-6 py-4 border-b no-print">조절</th>
+                                    <th class="px-6 py-4 border-b">이력</th>
+                                </tr>
+                            </thead>
+                            <tbody id="inventoryList" class="divide-y divide-slate-100"></tbody>
+                        </table>
+                    </div>
+                    
+                    <div id="emptyState" class="p-12 text-center" style="display:none;">
+                        <p class="text-slate-500">데이터를 불러오는 중이거나 상품이 없습니다.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="fixed bottom-8 right-8 bg-slate-900 text-white px-6 py-3 rounded-xl shadow-2xl transform translate-y-20 transition-transform duration-300 z-50"></div>
+</body>
+</html>
