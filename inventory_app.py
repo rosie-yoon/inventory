@@ -65,8 +65,10 @@ COL_IMG = '이미지URL'
 COL_QTY = '현재재고'
 COL_DATE = '최근수정일'
 
+REQUIRED_COLS = [COL_SKU, COL_NAME, COL_IMG, COL_QTY, COL_DATE]
+
 if 'inventory' not in st.session_state:
-    st.session_state.inventory = pd.DataFrame(columns=[COL_SKU, COL_NAME, COL_IMG, COL_QTY, COL_DATE])
+    st.session_state.inventory = pd.DataFrame(columns=REQUIRED_COLS)
 
 def get_connection():
     if not GSheetsConnection: return None
@@ -82,11 +84,24 @@ def fetch_data():
                 # TTL=0으로 설정하여 항상 최신 데이터를 읽어옴
                 df = conn.read(ttl=0) 
                 if df is not None:
+                    # 1. 빈 행 제거
                     df = df.dropna(how='all')
-                    # 숫자 데이터 변환
-                    if COL_QTY in df.columns:
-                        df[COL_QTY] = pd.to_numeric(df[COL_QTY], errors='coerce').fillna(0).astype(int)
-                    st.session_state.inventory = df.copy()
+                    
+                    # 2. 컬럼명 전처리: 앞뒤 공백 제거 (KeyError 방지의 핵심)
+                    df.columns = [str(c).strip() for c in df.columns]
+                    
+                    # 3. 필수 컬럼 유효성 검사 및 보정
+                    for col in REQUIRED_COLS:
+                        if col not in df.columns:
+                            # 컬럼이 없으면 기본값으로 생성
+                            df[col] = 0 if col == COL_QTY else ""
+                    
+                    # 4. 숫자 데이터 변환 및 타입 고정
+                    df[COL_QTY] = pd.to_numeric(df[COL_QTY], errors='coerce').fillna(0).astype(int)
+                    
+                    # 5. 필요한 컬럼만 순서대로 추출
+                    st.session_state.inventory = df[REQUIRED_COLS].copy()
+                    
                     st.toast("✅ 구글 시트 데이터를 성공적으로 불러왔습니다!")
                     return True
         except Exception as e:
@@ -142,14 +157,17 @@ with tab_add:
         if st.form_submit_button("목록에 추가"):
             if f_sku and f_name:
                 new_row = pd.DataFrame([[f_sku, f_name, f_img, int(f_qty), datetime.now().strftime("%Y-%m-%d")]], 
-                                      columns=[COL_SKU, COL_NAME, COL_IMG, COL_QTY, COL_DATE])
+                                      columns=REQUIRED_COLS)
                 st.session_state.inventory = pd.concat([st.session_state.inventory, new_row], ignore_index=True).drop_duplicates(COL_SKU, keep='last')
                 st.success("목록에 추가되었습니다. 상단의 [최종 저장]을 눌러야 시트에 반영됩니다.")
 
 with tab_list:
     search = st.text_input("🔍 상품명 또는 SKU 검색", "")
     
+    # 세션 데이터 가져오기
     df = st.session_state.inventory
+    
+    # 검색 필터링
     view_df = df[
         df[COL_NAME].astype(str).str.contains(search, case=False, na=False) |
         df[COL_SKU].astype(str).str.contains(search, case=False, na=False)
@@ -158,44 +176,55 @@ with tab_list:
     if view_df.empty:
         st.info("데이터가 없습니다. [불러오기] 버튼을 눌러 시트와 동기화하세요.")
     else:
-        # 요약 지표
-        m1, m2, m3 = st.columns(3)
-        m1.metric("총 품목 수", f"{len(view_df)}개")
-        m2.metric("전체 재고량", f"{int(view_df[COL_QTY].sum()):,}개")
-        m3.metric("부족 알림 (5개 미만)", f"{len(view_df[view_df[COL_QTY] < 5])}건")
+        # 요약 지표 계산 전 컬럼 확인 (안전장치)
+        try:
+            total_items = len(view_df)
+            total_qty = int(view_df[COL_QTY].sum())
+            low_stock = len(view_df[view_df[COL_QTY] < 5])
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("총 품목 수", f"{total_items}개")
+            m2.metric("전체 재고량", f"{total_qty:,}개")
+            m3.metric("부족 알림 (5개 미만)", f"{low_stock}건")
+        except Exception as e:
+            st.error(f"지표 계산 중 오류가 발생했습니다. 구글 시트의 헤더명을 확인해 주세요.")
+
         st.divider()
 
         # 리스트 출력
         for idx, row in view_df.iterrows():
-            real_idx = st.session_state.inventory.index[st.session_state.inventory[COL_SKU] == row[COL_SKU]][0]
-            
-            with st.container():
-                # [이미지] [정보] [수량 컨트롤] 3단 구성
-                c_img, c_info, c_ctrl = st.columns([1, 3, 2.5])
+            # 실제 데이터프레임의 정확한 인덱스 찾기
+            try:
+                real_idx = st.session_state.inventory.index[st.session_state.inventory[COL_SKU] == row[COL_SKU]][0]
                 
-                with c_img:
-                    url = row[COL_IMG] if pd.notna(row[COL_IMG]) and row[COL_IMG] != "" else "https://via.placeholder.com/150?text=No+Image"
-                    st.image(url, width=100)
-                
-                with c_info:
-                    st.subheader(row[COL_NAME])
-                    st.caption(f"코드: {row[COL_SKU]} | 마지막 수정: {row[COL_DATE]}")
-                
-                with c_ctrl:
-                    # 요청하신 수량 조절 버튼 병렬 배치
-                    st.write("") # 상단 여백 조절
-                    q_col1, q_col2, q_col3 = st.columns([1, 1.5, 1])
-                    with q_col1:
-                        if st.button("➖", key=f"down_{row[COL_SKU]}", use_container_width=True):
-                            if row[COL_QTY] > 0:
-                                st.session_state.inventory.at[real_idx, COL_QTY] -= 1
+                with st.container():
+                    c_img, c_info, c_ctrl = st.columns([1, 3, 2.5])
+                    
+                    with c_img:
+                        url = row[COL_IMG] if pd.notna(row[COL_IMG]) and row[COL_IMG] != "" else "https://via.placeholder.com/150?text=No+Image"
+                        st.image(url, width=100)
+                    
+                    with c_info:
+                        st.subheader(row[COL_NAME])
+                        st.caption(f"코드: {row[COL_SKU]} | 마지막 수정: {row[COL_DATE]}")
+                    
+                    with c_ctrl:
+                        st.write("") 
+                        q_col1, q_col2, q_col3 = st.columns([1, 1.5, 1])
+                        with q_col1:
+                            if st.button("➖", key=f"down_{row[COL_SKU]}", use_container_width=True):
+                                if row[COL_QTY] > 0:
+                                    st.session_state.inventory.at[real_idx, COL_QTY] -= 1
+                                    st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
+                                    st.rerun()
+                        with q_col2:
+                            # 수량 표시
+                            st.markdown(f'<div class="qty-text">{int(row[COL_QTY])}</div>', unsafe_allow_html=True)
+                        with q_col3:
+                            if st.button("➕", key=f"up_{row[COL_SKU]}", use_container_width=True):
+                                st.session_state.inventory.at[real_idx, COL_QTY] += 1
                                 st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
                                 st.rerun()
-                    with q_col2:
-                        st.markdown(f'<div class="qty-text">{int(row[COL_QTY])}</div>', unsafe_allow_html=True)
-                    with q_col3:
-                        if st.button("➕", key=f"up_{row[COL_SKU]}", use_container_width=True):
-                            st.session_state.inventory.at[real_idx, COL_QTY] += 1
-                            st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
-                            st.rerun()
-                st.divider()
+                    st.divider()
+            except Exception as e:
+                continue
