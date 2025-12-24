@@ -15,28 +15,45 @@ st.markdown("""
     <style>
     .main { background-color: #f8fafc; }
     
-    /* 인쇄 시 스타일 설정 */
+    /* 화면용 스타일 */
+    .no-print { display: block; }
+    
+    /* 인쇄 전용 스타일 (강력한 화이트리스트 방식) */
     @media print {
-        /* 사이드바, 헤더, 버튼 등 불필요한 요소 숨기기 */
-        header, .stSidebar, .no-print, [data-testid="stHeader"], .stTabs [role="tablist"], .stButton {
+        /* 1. 일단 모든 스트림릿 기본 요소를 숨김 */
+        header, .stSidebar, [data-testid="stHeader"], [data-testid="stToolbar"], .stTabs [role="tablist"], .no-print, .stButton {
             display: none !important;
         }
-        /* 메인 컨텐츠 여백 제거 */
+        
+        /* 2. 전체 페이지 배경 및 여백 초기화 */
+        [data-testid="stAppViewContainer"] {
+            background-color: white !important;
+        }
         .main .block-container {
-            padding-top: 0 !important;
-            padding-bottom: 0 !important;
+            padding: 0 !important;
             margin: 0 !important;
         }
-        /* 인쇄용 테이블 스타일 */
+
+        /* 3. 인쇄 영역만 강제로 노출 */
+        .print-area {
+            display: block !important;
+            visibility: visible !important;
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+        }
+
+        /* 4. 테이블 디자인 보강 */
         .print-table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 14px;
-            margin-top: 20px;
+            font-size: 13px;
+            margin-top: 10px;
         }
         .print-table th, .print-table td {
-            border: 1px solid #333 !important;
-            padding: 12px 8px;
+            border: 1px solid #000 !important;
+            padding: 10px 5px;
             text-align: center;
             vertical-align: middle;
             color: black !important;
@@ -44,7 +61,6 @@ st.markdown("""
         .print-table th {
             background-color: #f2f2f2 !important;
             -webkit-print-color-adjust: exact;
-            font-weight: bold;
         }
         .print-img {
             width: 60px;
@@ -52,10 +68,9 @@ st.markdown("""
             object-fit: cover;
             border-radius: 4px;
         }
-        /* 실재고 기입란 높이 확보 */
         .physical-stock-cell {
-            width: 150px;
-            height: 60px;
+            width: 140px;
+            height: 50px;
         }
     }
     
@@ -67,7 +82,7 @@ st.markdown("""
 if 'inventory' not in st.session_state:
     st.session_state.inventory = pd.DataFrame(columns=['SKU', '상품명', '이미지URL', '현재재고', '최근수정일'])
 
-# --- 사이드바: 상품 등록 ---
+# --- 사이드바: 상품 등록 (화살표를 눌러 열고 닫을 수 있음) ---
 with st.sidebar:
     st.header("📦 개별 상품 등록")
     with st.form("add_form", clear_on_submit=True):
@@ -90,11 +105,7 @@ with st.sidebar:
     if uploaded_file:
         try:
             if uploaded_file.name.endswith('xlsx'):
-                try:
-                    df_upload = pd.read_excel(uploaded_file, engine='openpyxl')
-                except ImportError:
-                    st.error("❌ 'openpyxl' 라이브러리가 필요합니다. 'requirements.txt'에 추가해주세요.")
-                    df_upload = None
+                df_upload = pd.read_excel(uploaded_file, engine='openpyxl')
             else:
                 df_upload = pd.read_csv(uploaded_file)
             
@@ -106,8 +117,6 @@ with st.sidebar:
                 df_upload = df_upload.rename(columns=rename_map)
                 if '최근수정일' not in df_upload.columns:
                     df_upload['최근수정일'] = datetime.now().strftime("%Y-%m-%d")
-                if '이미지URL' not in df_upload.columns:
-                    df_upload['이미지URL'] = ""
                 
                 target_cols = ['SKU', '상품명', '이미지URL', '현재재고', '최근수정일']
                 df_final = df_upload[df_upload.columns.intersection(target_cols)]
@@ -130,7 +139,7 @@ with tab_manage:
     ].reset_index(drop=True)
 
     if filtered_df.empty:
-        st.info("표시할 상품이 없습니다.")
+        st.info("표시할 상품이 없습니다. 왼쪽 사이드바를 열어 상품을 등록해주세요.")
     else:
         for idx, row in filtered_df.iterrows():
             real_idx = st.session_state.inventory.index[st.session_state.inventory['SKU'] == row['SKU']][0]
@@ -143,40 +152,39 @@ with tab_manage:
                     st.subheader(row['상품명'])
                     st.caption(f"SKU: {row['SKU']} | 마지막 수정: {row['최근수정일']}")
                 with c3:
-                    st.write("수량 조절")
                     sc1, sc2, sc3 = st.columns(3)
                     st.markdown(f"### {int(row['현재재고'])} 개")
                     if sc1.button("➕", key=f"in_{row['SKU']}"):
                         st.session_state.inventory.at[real_idx, '현재재고'] += 1
-                        st.session_state.inventory.at[real_idx, '최근수정일'] = datetime.now().strftime("%Y-%m-%d")
                         st.rerun()
                     if sc2.button("➖", key=f"out_{row['SKU']}"):
                         if st.session_state.inventory.at[real_idx, '현재재고'] > 0:
                             st.session_state.inventory.at[real_idx, '현재재고'] -= 1
-                            st.session_state.inventory.at[real_idx, '최근수정일'] = datetime.now().strftime("%Y-%m-%d")
                             st.rerun()
                     if sc3.button("🗑️", key=f"del_{row['SKU']}"):
                         st.session_state.inventory = st.session_state.inventory.drop(real_idx)
                         st.rerun()
                 with c4:
-                    if row['현재재고'] < 5: st.warning("재고 부족")
+                    if row['현재재고'] < 5: st.warning("부족")
                     else: st.success("정상")
                 st.divider()
 
 with tab_print:
     st.subheader("🖨️ 재고 실사용 리포트")
-    st.write("이미지, 시스템 재고가 포함된 리스트입니다. 실재고 칸은 출력 후 수기로 작성하세요.")
+    st.write("이미지와 시스템 재고가 포함된 리스트입니다. 인쇄 후 실재고를 수기로 기입하세요.")
     
-    # 인쇄 스크립트 수정 (부모 창을 타겟으로 호출)
-    if st.button("📄 실사표 즉시 인쇄 (Print)", key="print_btn"):
+    # 인쇄 버튼 (JS 개선)
+    if st.button("📄 실사표 즉시 인쇄", key="print_btn"):
         st.components.v1.html("""
             <script>
-                window.parent.focus();
-                window.parent.print();
+                setTimeout(function() {
+                    window.parent.focus();
+                    window.parent.print();
+                }, 500);
             </script>
         """, height=0)
 
-    # 인쇄용 HTML 테이블 생성
+    # 인쇄용 HTML 테이블 생성 (print-area 클래스 부여)
     html_content = f"""
     <div class="print-area">
         <h2 style="text-align: center; margin-bottom: 20px;">재고 실사 확인표 ({datetime.now().strftime('%Y-%m-%d')})</h2>
@@ -198,8 +206,8 @@ with tab_print:
                 <tr>
                     <td><img src="{img_src}" class="print-img"></td>
                     <td style="text-align: left; padding-left: 15px;">
-                        <div style="font-weight: bold; font-size: 14px;">{row['상품명']}</div>
-                        <div style="font-size: 11px; color: #666; margin-top: 4px;">SKU: {row['SKU']}</div>
+                        <div style="font-weight: bold;">{row['상품명']}</div>
+                        <div style="font-size: 11px; color: #666;">SKU: {row['SKU']}</div>
                     </td>
                     <td style="font-size: 16px;"><b>{int(row['현재재고'])}</b></td>
                     <td class="physical-stock-cell"></td>
@@ -217,13 +225,8 @@ with tab_print:
     
     st.markdown(html_content, unsafe_allow_html=True)
 
-# 하단 데이터 백업
+# 하단 데이터 백업 (사이드바 내부)
 st.sidebar.divider()
 st.sidebar.subheader("📥 데이터 백업")
 csv_data = st.session_state.inventory.to_csv(index=False).encode('utf-8-sig')
-st.sidebar.download_button(
-    label="전체 데이터 CSV 다운로드",
-    data=csv_data,
-    file_name=f"inventory_{datetime.now().strftime('%Y%m%d')}.csv",
-    mime="text/csv",
-)
+st.sidebar.download_button(label="전체 데이터 CSV 다운로드", data=csv_data, file_name=f"inventory_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
