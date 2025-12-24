@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import io
+import json
 
 # 페이지 설정 (사이드바를 기본적으로 접힌 상태로 설정)
 st.set_page_config(
@@ -10,71 +11,19 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 스타일 설정 (화면 디자인 및 인쇄 최적화)
+# 화면용 스타일 설정
 st.markdown("""
     <style>
     .main { background-color: #f8fafc; }
-    
-    /* 화면용 스타일 */
-    .no-print { display: block; }
-    
-    /* 인쇄 전용 스타일 (강력한 화이트리스트 방식) */
-    @media print {
-        /* 1. 일단 모든 스트림릿 기본 요소를 숨김 */
-        header, .stSidebar, [data-testid="stHeader"], [data-testid="stToolbar"], .stTabs [role="tablist"], .no-print, .stButton {
-            display: none !important;
-        }
-        
-        /* 2. 전체 페이지 배경 및 여백 초기화 */
-        [data-testid="stAppViewContainer"] {
-            background-color: white !important;
-        }
-        .main .block-container {
-            padding: 0 !important;
-            margin: 0 !important;
-        }
-
-        /* 3. 인쇄 영역만 강제로 노출 */
-        .print-area {
-            display: block !important;
-            visibility: visible !important;
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 100%;
-        }
-
-        /* 4. 테이블 디자인 보강 */
-        .print-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-            margin-top: 10px;
-        }
-        .print-table th, .print-table td {
-            border: 1px solid #000 !important;
-            padding: 10px 5px;
-            text-align: center;
-            vertical-align: middle;
-            color: black !important;
-        }
-        .print-table th {
-            background-color: #f2f2f2 !important;
-            -webkit-print-color-adjust: exact;
-        }
-        .print-img {
-            width: 60px;
-            height: 60px;
-            object-fit: cover;
-            border-radius: 4px;
-        }
-        .physical-stock-cell {
-            width: 140px;
-            height: 50px;
-        }
-    }
-    
     .stNumberInput div div input { font-weight: bold; }
+    /* 탭 디자인 개선 */
+    .stTabs [role="tablist"] { gap: 10px; }
+    .stTabs [role="tab"] {
+        background-color: #f1f5f9;
+        border-radius: 8px 8px 0 0;
+        padding: 8px 20px;
+        font-weight: bold;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -82,10 +31,11 @@ st.markdown("""
 if 'inventory' not in st.session_state:
     st.session_state.inventory = pd.DataFrame(columns=['SKU', '상품명', '이미지URL', '현재재고', '최근수정일'])
 
-# --- 사이드바: 상품 등록 (화살표를 눌러 열고 닫을 수 있음) ---
+# --- 사이드바: 상품 등록 ---
 with st.sidebar:
-    st.header("📦 개별 상품 등록")
+    st.header("📦 상품 관리 메뉴")
     with st.form("add_form", clear_on_submit=True):
+        st.subheader("개별 등록")
         new_sku = st.text_input("SKU (코드)")
         new_name = st.text_input("상품명")
         new_img = st.text_input("이미지 URL")
@@ -128,7 +78,6 @@ with st.sidebar:
 # --- 메인 화면 ---
 st.title("🍎 클라우드 재고 관리")
 
-# 탭 구성
 tab_manage, tab_print = st.tabs(["📊 재고 관리", "🖨️ 재고 실사표 (인쇄용)"])
 
 with tab_manage:
@@ -139,7 +88,7 @@ with tab_manage:
     ].reset_index(drop=True)
 
     if filtered_df.empty:
-        st.info("표시할 상품이 없습니다. 왼쪽 사이드바를 열어 상품을 등록해주세요.")
+        st.info("표시할 상품이 없습니다. 왼쪽 상단의 화살표(>)를 눌러 사이드바를 열고 상품을 등록해주세요.")
     else:
         for idx, row in filtered_df.iterrows():
             real_idx = st.session_state.inventory.index[st.session_state.inventory['SKU'] == row['SKU']][0]
@@ -156,10 +105,12 @@ with tab_manage:
                     st.markdown(f"### {int(row['현재재고'])} 개")
                     if sc1.button("➕", key=f"in_{row['SKU']}"):
                         st.session_state.inventory.at[real_idx, '현재재고'] += 1
+                        st.session_state.inventory.at[real_idx, '최근수정일'] = datetime.now().strftime("%Y-%m-%d")
                         st.rerun()
                     if sc2.button("➖", key=f"out_{row['SKU']}"):
                         if st.session_state.inventory.at[real_idx, '현재재고'] > 0:
                             st.session_state.inventory.at[real_idx, '현재재고'] -= 1
+                            st.session_state.inventory.at[real_idx, '최근수정일'] = datetime.now().strftime("%Y-%m-%d")
                             st.rerun()
                     if sc3.button("🗑️", key=f"del_{row['SKU']}"):
                         st.session_state.inventory = st.session_state.inventory.drop(real_idx)
@@ -171,61 +122,83 @@ with tab_manage:
 
 with tab_print:
     st.subheader("🖨️ 재고 실사용 리포트")
-    st.write("이미지와 시스템 재고가 포함된 리스트입니다. 인쇄 후 실재고를 수기로 기입하세요.")
+    st.write("인쇄 시 새 창이 열리며 실사표가 나타납니다. 확인 후 인쇄를 진행하세요.")
     
-    # 인쇄 버튼 (JS 개선)
-    if st.button("📄 실사표 즉시 인쇄", key="print_btn"):
-        st.components.v1.html("""
-            <script>
-                setTimeout(function() {
-                    window.parent.focus();
-                    window.parent.print();
-                }, 500);
-            </script>
-        """, height=0)
+    # 인쇄용 HTML 데이터 준비
+    current_date = datetime.now().strftime('%Y-%m-%d')
+    rows_html = ""
+    for _, row in st.session_state.inventory.iterrows():
+        img_src = row['이미지URL'] if pd.notna(row['이미지URL']) and row['이미지URL'] != "" else "https://via.placeholder.com/60"
+        rows_html += f"""
+            <tr>
+                <td><img src='{img_src}' style='width:60px; height:60px; object-fit:cover; border-radius:4px;'></td>
+                <td style='text-align:left; padding-left:15px;'>
+                    <div style='font-weight:bold;'>{row['상품명']}</div>
+                    <div style='font-size:11px; color:#666;'>SKU: {row['SKU']}</div>
+                </td>
+                <td style='font-size:16px;'><b>{int(row['현재재고'])}</b></td>
+                <td style='width:150px; height:50px;'></td>
+            </tr>
+        """
 
-    # 인쇄용 HTML 테이블 생성 (print-area 클래스 부여)
-    html_content = f"""
-    <div class="print-area">
-        <h2 style="text-align: center; margin-bottom: 20px;">재고 실사 확인표 ({datetime.now().strftime('%Y-%m-%d')})</h2>
-        <table class="print-table">
+    full_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>재고 실사 확인표</title>
+        <style>
+            body {{ font-family: sans-serif; padding: 20px; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+            th, td {{ border: 1px solid #000; padding: 10px; text-align: center; }}
+            th {{ background-color: #f2f2f2; }}
+            @media print {{
+                .no-print {{ display: none; }}
+                button {{ display: none; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <h2 style='text-align:center;'>재고 실사 확인표 ({current_date})</h2>
+        <table>
             <thead>
                 <tr>
-                    <th style="width: 80px;">이미지</th>
+                    <th>이미지</th>
                     <th>상품명 / SKU</th>
-                    <th style="width: 120px;">시스템 재고</th>
-                    <th style="width: 150px;">실재고 (수기기입)</th>
+                    <th>시스템 재고</th>
+                    <th>실재고 (수기기입)</th>
                 </tr>
             </thead>
             <tbody>
-    """
-    
-    for _, row in st.session_state.inventory.iterrows():
-        img_src = row['이미지URL'] if pd.notna(row['이미지URL']) and row['이미지URL'] != "" else "https://via.placeholder.com/60"
-        html_content += f"""
-                <tr>
-                    <td><img src="{img_src}" class="print-img"></td>
-                    <td style="text-align: left; padding-left: 15px;">
-                        <div style="font-weight: bold;">{row['상품명']}</div>
-                        <div style="font-size: 11px; color: #666;">SKU: {row['SKU']}</div>
-                    </td>
-                    <td style="font-size: 16px;"><b>{int(row['현재재고'])}</b></td>
-                    <td class="physical-stock-cell"></td>
-                </tr>
-        """
-    
-    html_content += """
+                {rows_html}
             </tbody>
         </table>
-        <div style="margin-top: 20px; text-align: right; font-size: 12px; font-weight: bold;">
-            확인자: ____________________ (인)
-        </div>
-    </div>
+        <div style='margin-top:30px; text-align:right;'>확인자: ____________________ (인)</div>
+        <script>
+            window.onload = function() {{ 
+                setTimeout(function() {{ window.print(); }}, 500);
+            }};
+        </script>
+    </body>
+    </html>
     """
-    
-    st.markdown(html_content, unsafe_allow_html=True)
 
-# 하단 데이터 백업 (사이드바 내부)
+    # 새 창 인쇄 버튼
+    if st.button("📄 실사표 새 창으로 열기 및 인쇄", key="new_print_btn"):
+        # JS를 이용해 새 창에 HTML 쓰기
+        encoded_html = full_html.replace("`", "\\`").replace("\n", " ")
+        st.components.v1.html(f"""
+            <script>
+                const printWindow = window.open('', '_blank', 'width=900,height=800');
+                printWindow.document.write(`{encoded_html}`);
+                printWindow.document.close();
+            </script>
+        """, height=0)
+
+    # 화면상 미리보기 (참고용)
+    st.info("💡 아래는 화면용 미리보기입니다. 실제 인쇄는 위 버튼을 이용하세요.")
+    st.markdown(f"<div style='border:1px solid #ddd; padding:20px; border-radius:10px; background:white;'>{full_html}</div>", unsafe_allow_html=True)
+
+# 하단 데이터 백업
 st.sidebar.divider()
 st.sidebar.subheader("📥 데이터 백업")
 csv_data = st.session_state.inventory.to_csv(index=False).encode('utf-8-sig')
