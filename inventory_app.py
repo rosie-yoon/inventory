@@ -49,7 +49,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 표준 컬럼명 정의 (구글 시트 헤더 일치) ---
+# --- 표준 컬럼명 정의 (제공해주신 구글 시트 헤더와 100% 일치) ---
 COL_SKU = 'SKU'
 COL_NAME = '상품명'
 COL_IMG = '이미지URL'
@@ -68,46 +68,45 @@ def get_connection():
     except: return None
 
 def fetch_data():
-    """INPUT 시트에서 원본 데이터를 불러옵니다. 이름 불일치에 대비한 방어 로직 포함."""
+    """INPUT 시트에서 원본 데이터를 불러옵니다."""
     conn = get_connection()
     if conn:
         try:
             with st.spinner("구글 시트(INPUT)에서 데이터를 불러오는 중..."):
-                # 1. 시도: 정확히 "INPUT"이라는 워크시트 읽기
-                # 라이브러리에 따라 worksheet 리스트를 먼저 가져와 유사 이름을 찾을 수도 있습니다.
-                try:
-                    df = conn.read(worksheet="INPUT", ttl=0)
-                except Exception:
-                    # 2. 실패 시: "input" (소문자) 또는 공백 포함 " INPUT " 등 유사 이름 시도
-                    # 만약 이것도 실패하면 에러를 던짐
-                    df = conn.read(worksheet="input", ttl=0)
-
+                # 시트의 'INPUT' 워크시트에서 데이터 읽기
+                df = conn.read(worksheet="INPUT", ttl=0)
                 if df is not None:
+                    # 빈 행 제거
                     df = df.dropna(how='all')
-                    # 컬럼명 앞뒤 공백 제거
+                    
+                    # 컬럼명 전처리: 앞뒤 공백 제거 및 문자열 변환
                     df.columns = [str(c).strip() for c in df.columns]
                     
-                    # 필수 컬럼 보정 (사용자가 제시한 '이미지URL' 헤더 지원)
+                    # 헤더 이름이 미세하게 다를 경우를 위한 유연한 매핑
                     rename_map = {
-                        '이미지URL': COL_IMG, '이미지 URL': COL_IMG, 'URL': COL_IMG,
-                        '현재재고': COL_QTY, '수량': COL_QTY, '재고': COL_QTY
+                        '이미지 URL': COL_IMG, '이미지주소': COL_IMG,
+                        '현재 재고': COL_QTY, '수량': COL_QTY, '재고': COL_QTY
                     }
                     df = df.rename(columns=rename_map)
 
+                    # 필수 컬럼 존재 확인 및 부족한 컬럼 생성
                     for col in REQUIRED_COLS:
                         if col not in df.columns:
                             df[col] = 0 if col == COL_QTY else ""
                     
+                    # 수량 데이터 숫자형 변환
                     df[COL_QTY] = pd.to_numeric(df[COL_QTY], errors='coerce').fillna(0).astype(int)
+                    
+                    # 세션 상태 업데이트
                     st.session_state.inventory = df[REQUIRED_COLS].copy()
-                    st.toast("✅ INPUT 데이터 로드 완료!")
+                    st.toast("✅ INPUT 데이터를 성공적으로 가져왔습니다!")
                     return True
         except Exception as e:
             st.error(f"불러오기 실패: {e}")
             st.info("""
-            **💡 해결 방법:**
-            1. 구글 시트 하단 탭 이름이 정확히 **INPUT** 인지 확인해 주세요. (공백이 있으면 안 됩니다.)
-            2. 시트의 첫 번째 줄(헤더)에 **SKU, 상품명, 이미지URL, 현재재고, 최근수정일**이 있는지 확인해 주세요.
+            **💡 체크리스트:**
+            1. 구글 시트 하단 탭 이름이 **INPUT** 인지 확인해 주세요.
+            2. 시트 첫 줄에 **SKU, 상품명, 이미지URL, 현재재고, 최근수정일** 헤더가 있는지 확인해 주세요.
             """)
     return False
 
@@ -117,28 +116,28 @@ def commit_data():
     if conn:
         try:
             with st.spinner("구글 시트(OUTPUT)에 저장 중..."):
-                # 결과 데이터를 'OUTPUT' 워크시트에 업데이트 (기존 내용 덮어쓰기)
+                # 현재 인벤토리 데이터를 'OUTPUT' 워크시트에 덮어쓰기
                 conn.update(worksheet="OUTPUT", data=st.session_state.inventory)
                 st.success("🚀 OUTPUT 탭에 최종 결과가 저장되었습니다!")
                 time.sleep(1)
                 st.rerun()
         except Exception as e:
             st.error(f"저장 실패: {e}")
-            st.info("💡 구글 시트에 **OUTPUT**이라는 이름의 탭이 이미 존재해야 저장할 수 있습니다.")
+            st.info("💡 구글 시트에 **OUTPUT** 탭을 미리 만들어 두셨는지 확인해 주세요.")
 
 # --- 메인 화면 ---
 st.title("🍎 스마트 재고 동기화 시스템")
-st.caption("INPUT 시트에서 읽어오고, OUTPUT 시트에 저장합니다.")
+st.caption("구글 시트의 INPUT 탭을 읽어 수정하고, 그 결과를 OUTPUT 탭에 기록합니다.")
 
 # 상단 제어판
 with st.container():
     st.markdown('<div class="sync-box">', unsafe_allow_html=True)
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
-        st.subheader("🔄 데이터 동기화")
+        st.subheader("🔄 실시간 동기화")
         is_ready = "connections" in st.secrets and "gsheets" in st.secrets.connections
         status_color = "#dcfce7" if is_ready else "#fee2e2"
-        status_text = "● 클라우드 연결됨" if is_ready else "● Secrets 설정 필요"
+        status_text = "● 클라우드 서버 연결됨" if is_ready else "● 설정 확인 필요"
         st.markdown(f'<span class="status-badge" style="background:{status_color};">{status_text}</span>', unsafe_allow_html=True)
     with c2:
         if st.button("📥 INPUT 불러오기", use_container_width=True):
@@ -149,25 +148,25 @@ with st.container():
     st.markdown('</div>', unsafe_allow_html=True)
 
 # 탭 구성
-tab_output, tab_input = st.tabs(["📊 재고 현황 (OUTPUT 대상)", "➕ 상품 추가 (임시)"])
+tab_output, tab_input = st.tabs(["📊 재고 현황 (OUTPUT 관리)", "➕ 신규 품목 추가"])
 
 with tab_input:
-    st.subheader("📦 신규 품목 등록")
-    st.info("여기서 등록한 상품은 '최종 저장' 시 OUTPUT 시트에 포함됩니다.")
+    st.subheader("📦 신규 품목 추가")
+    st.info("여기서 추가한 상품은 상단의 'OUTPUT 저장' 시 시트에 반영됩니다.")
     with st.form("add_form", clear_on_submit=True):
         f_sku = st.text_input("SKU (상품 코드)")
         f_name = st.text_input("상품명")
-        f_img = st.text_input("이미지URL", placeholder="https://example.com/image.png")
-        f_qty = st.number_input("초기 재고량", min_value=0, step=1)
-        if st.form_submit_button("리스트에 추가"):
+        f_img = st.text_input("이미지URL", placeholder="예: https://cf.shopee.sg/file/...")
+        f_qty = st.number_input("현재 수량", min_value=0, step=1)
+        if st.form_submit_button("임시 리스트에 추가"):
             if f_sku and f_name:
                 new_row = pd.DataFrame([[f_sku, f_name, f_img, int(f_qty), datetime.now().strftime("%Y-%m-%d")]], 
                                       columns=REQUIRED_COLS)
                 st.session_state.inventory = pd.concat([st.session_state.inventory, new_row], ignore_index=True).drop_duplicates(COL_SKU, keep='last')
-                st.success(f"'{f_name}' 추가됨. 상단의 저장 버튼을 눌러야 시트에 반영됩니다.")
+                st.success(f"'{f_name}'이 목록에 추가되었습니다. 저장 버튼을 눌러야 클라우드에 반영됩니다.")
 
 with tab_output:
-    search = st.text_input("🔍 검색 (명칭/SKU)", "")
+    search = st.text_input("🔍 품명 또는 SKU 검색", "")
     df = st.session_state.inventory
     
     # 검색 필터링
@@ -180,7 +179,7 @@ with tab_output:
         view_df = pd.DataFrame()
 
     if view_df.empty:
-        st.info("표시할 데이터가 없습니다. [INPUT 불러오기]를 눌러주세요.")
+        st.info("표시할 데이터가 없습니다. 먼저 [INPUT 불러오기]를 실행해 주세요.")
     else:
         # 지표 요약
         m1, m2 = st.columns(2)
@@ -189,21 +188,24 @@ with tab_output:
         st.divider()
 
         for idx, row in view_df.iterrows():
-            # 실제 인벤토리에서 해당 상품 찾기
             try:
                 real_idx = st.session_state.inventory.index[st.session_state.inventory[COL_SKU] == row[COL_SKU]][0]
                 with st.container():
+                    # 이미지(1) : 정보(3) : 조절(2.5) 비율
                     c_img, c_info, c_qty = st.columns([1, 3, 2.5])
+                    
                     with c_img:
                         url = row[COL_IMG]
-                        # 이미지 URL이 유효하지 않을 경우를 위한 처리
+                        # Shopee 이미지 서버 주소 및 일반 URL 렌더링 지원
                         final_url = url if pd.notna(url) and str(url).startswith('http') else "https://via.placeholder.com/150?text=No+Image"
-                        st.image(final_url, width=100)
+                        st.image(final_url, width=110)
+                    
                     with c_info:
                         st.subheader(row[COL_NAME])
-                        st.caption(f"SKU: {row[COL_SKU]} | 수정일: {row[COL_DATE]}")
+                        st.caption(f"SKU: {row[COL_SKU]} | 업데이트: {row[COL_DATE]}")
+                    
                     with c_qty:
-                        st.write("") 
+                        st.write("") # 수직 정렬용 여백
                         q_col1, q_col2, q_col3 = st.columns([1, 1.5, 1])
                         with q_col1:
                             if st.button("➖", key=f"down_{row[COL_SKU]}", use_container_width=True):
