@@ -68,16 +68,16 @@ def get_connection():
     except: return None
 
 def fetch_data():
-    """OUTPUT 시트에서 데이터를 불러옵니다."""
+    """INPUT 시트에서 원본 데이터를 불러옵니다."""
     conn = get_connection()
     if conn:
         try:
-            with st.spinner("구글 시트(OUTPUT)에서 데이터를 불러오는 중..."):
-                # 특정 워크시트(OUTPUT) 지정하여 읽기
-                df = conn.read(worksheet="OUTPUT", ttl=0) 
+            with st.spinner("구글 시트(INPUT)에서 데이터를 불러오는 중..."):
+                # 원본 데이터가 있는 'INPUT' 워크시트에서 읽기
+                df = conn.read(worksheet="INPUT", ttl=0) 
                 if df is not None:
                     df = df.dropna(how='all')
-                    # 컬럼명 전처리
+                    # 컬럼명 앞뒤 공백 제거
                     df.columns = [str(c).strip() for c in df.columns]
                     
                     # 필수 컬럼 보정
@@ -87,30 +87,31 @@ def fetch_data():
                     
                     df[COL_QTY] = pd.to_numeric(df[COL_QTY], errors='coerce').fillna(0).astype(int)
                     st.session_state.inventory = df[REQUIRED_COLS].copy()
-                    st.toast("✅ 불러오기 완료!")
+                    st.toast("✅ INPUT 데이터 로드 완료!")
                     return True
         except Exception as e:
             st.error(f"불러오기 실패: {e}")
-            st.info("💡 구글 시트에 'OUTPUT'이라는 이름의 탭(워크시트)이 있는지 확인하세요.")
+            st.info("💡 구글 시트에 'INPUT'이라는 이름의 탭이 있는지 확인하세요.")
     return False
 
 def commit_data():
-    """현재 상태를 구글 시트의 OUTPUT 탭에 덮어씁니다."""
+    """현재 상태를 구글 시트의 OUTPUT 탭에 저장합니다."""
     conn = get_connection()
     if conn:
         try:
-            with st.spinner("구글 시트(OUTPUT)에 덮어쓰는 중..."):
-                # 현재 인벤토리 데이터를 'OUTPUT' 워크시트에 업데이트 (기존 내용 대체)
+            with st.spinner("구글 시트(OUTPUT)에 저장 중..."):
+                # 결과 데이터를 'OUTPUT' 워크시트에 업데이트 (기존 내용 덮어쓰기)
                 conn.update(worksheet="OUTPUT", data=st.session_state.inventory)
-                st.success("🚀 OUTPUT 탭에 모든 데이터가 새로 저장되었습니다!")
+                st.success("🚀 OUTPUT 탭에 최종 결과가 저장되었습니다!")
                 time.sleep(1)
                 st.rerun()
         except Exception as e:
             st.error(f"저장 실패: {e}")
+            st.info("💡 구글 시트에 'OUTPUT' 탭이 있는지, 서비스 계정에 '편집자' 권한이 있는지 확인하세요.")
 
 # --- 메인 화면 ---
 st.title("🍎 스마트 재고 동기화 시스템")
-st.caption("구글 시트의 OUTPUT 탭을 실시간으로 관리합니다.")
+st.caption("INPUT 시트에서 읽어오고, OUTPUT 시트에 저장합니다.")
 
 # 상단 제어판
 with st.container():
@@ -123,29 +124,30 @@ with st.container():
         status_text = "● 클라우드 연결됨" if is_ready else "● Secrets 설정 필요"
         st.markdown(f'<span class="status-badge" style="background:{status_color};">{status_text}</span>', unsafe_allow_html=True)
     with c2:
-        if st.button("📥 불러오기", use_container_width=True):
+        if st.button("📥 INPUT 불러오기", use_container_width=True):
             if fetch_data(): st.rerun()
     with c3:
-        if st.button("💾 최종 저장", type="primary", use_container_width=True):
+        if st.button("💾 OUTPUT 저장", type="primary", use_container_width=True):
             commit_data()
     st.markdown('</div>', unsafe_allow_html=True)
 
-# 탭 이름 변경: INPUT(입력)과 OUTPUT(결과)
-tab_input, tab_output = st.tabs(["➕ INPUT (상품 등록)", "📊 OUTPUT (현황/조절)"])
+# 탭 구성
+tab_output, tab_input = st.tabs(["📊 재고 현황 (OUTPUT 대상)", "➕ 상품 추가 (임시)"])
 
 with tab_input:
     st.subheader("📦 신규 품목 등록")
+    st.info("여기서 등록한 상품은 '최종 저장' 시 OUTPUT 시트에 포함됩니다.")
     with st.form("add_form", clear_on_submit=True):
         f_sku = st.text_input("SKU (상품 코드)")
         f_name = st.text_input("상품명")
-        f_img = st.text_input("이미지URL (직접 링크)", placeholder="https://example.com/image.png")
+        f_img = st.text_input("이미지URL", placeholder="https://example.com/image.png")
         f_qty = st.number_input("초기 재고량", min_value=0, step=1)
-        if st.form_submit_button("목록에 추가"):
+        if st.form_submit_button("리스트에 추가"):
             if f_sku and f_name:
                 new_row = pd.DataFrame([[f_sku, f_name, f_img, int(f_qty), datetime.now().strftime("%Y-%m-%d")]], 
                                       columns=REQUIRED_COLS)
                 st.session_state.inventory = pd.concat([st.session_state.inventory, new_row], ignore_index=True).drop_duplicates(COL_SKU, keep='last')
-                st.success(f"'{f_name}'이 목록에 추가되었습니다. 상단의 [최종 저장]을 눌러주세요.")
+                st.success(f"'{f_name}' 추가됨. 상단의 저장 버튼을 눌러야 시트에 반영됩니다.")
 
 with tab_output:
     search = st.text_input("🔍 검색 (명칭/SKU)", "")
@@ -156,7 +158,7 @@ with tab_output:
     ].reset_index(drop=True)
 
     if view_df.empty:
-        st.info("데이터가 없습니다. [불러오기]를 누르거나 INPUT 탭에서 상품을 등록하세요.")
+        st.info("표시할 데이터가 없습니다. [INPUT 불러오기]를 눌러주세요.")
     else:
         # 지표 요약
         m1, m2 = st.columns(2)
@@ -170,7 +172,6 @@ with tab_output:
                 c_img, c_info, c_qty = st.columns([1, 3, 2.5])
                 with c_img:
                     url = row[COL_IMG]
-                    # 이미지 출력 보안 강화 및 샘플 형식 지원
                     final_url = url if pd.notna(url) and str(url).startswith('http') else "https://via.placeholder.com/150?text=No+Image"
                     st.image(final_url, width=100)
                 with c_info:
