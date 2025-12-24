@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 import time
 
-# 구글 시트 연결 라이브러리 (배포 시 requirements.txt에 streamlit-gsheets 추가 필요)
+# 구글 시트 연결 라이브러리 (배포 시 requirements.txt에 st-gsheets-connection 추가 필요)
 try:
     from streamlit_gsheets import GSheetsConnection
 except ImportError:
@@ -53,7 +53,7 @@ st.markdown("""
 if 'inventory' not in st.session_state:
     st.session_state.inventory = pd.DataFrame(columns=['SKU', '상품명', '이미지URL', '현재재고', '최근수정일'])
 
-# 구글 시트 연결 설정 확인 (보강됨)
+# 구글 시트 연결 설정 확인
 def get_gsheets_config():
     """Secrets에서 설정값 확인 및 반환"""
     # 1. [connections.gsheets] 구조 확인
@@ -67,18 +67,18 @@ def get_gsheets_config():
 def is_gsheets_configured():
     config = get_gsheets_config()
     if config:
-        # 사용자님이 입력하신 public_gsheets_url 또는 spreadsheet 키 확인
-        return "public_gsheets_url" in config or "spreadsheet" in config
+        # st-gsheets-connection 라이브러리가 인식하는 주요 키값들 확인
+        return "public_gsheets_url" in config or "spreadsheet" in config or "url" in config
     return False
 
 # 구글 시트 연결 시도
 def get_connection():
     if not GSheetsConnection:
-        # 라이브러리 미설치 시 에러 메시지만 표시하고 None 반환
         return None
     
     if is_gsheets_configured():
         try:
+            # 팁: st.connection은 기본적으로 [connections.gsheets] 섹션을 찾습니다.
             return st.connection("gsheets", type=GSheetsConnection)
         except Exception as e:
             st.error(f"연결 시도 중 오류 발생: {e}")
@@ -91,6 +91,7 @@ def fetch_data():
     if conn:
         try:
             with st.spinner("구글 시트에서 최신 데이터를 가져오는 중..."):
+                # 최신 라이브러리에서는 read()가 시트의 내용을 바로 가져옵니다.
                 df = conn.read(ttl=0) 
                 if df is not None:
                     df = df.dropna(how='all')
@@ -99,13 +100,16 @@ def fetch_data():
                     st.session_state.inventory = df.copy()
                     st.toast("✅ 동기화 완료!")
                     return True
+                else:
+                    st.warning("시트에 읽어올 데이터가 없습니다.")
         except Exception as e:
             st.error(f"데이터 읽기 실패: {e}")
+            st.info("💡 구글 시트의 공유 설정이 '편집자' 권한으로 되어 있는지 다시 확인해주세요.")
     else:
         if not GSheetsConnection:
-            st.error("❌ 'streamlit-gsheets' 라이브러리가 설치되지 않았습니다. (requirements.txt 확인)")
+            st.error("❌ 라이브러리 설치 오류: requirements.txt에 'st-gsheets-connection'을 추가해야 합니다.")
         else:
-            st.error("❌ 설정 오류: 구글 시트 주소를 찾을 수 없습니다. (Secrets 확인)")
+            st.error("❌ 설정 오류: 구글 시트 주소를 찾을 수 없습니다. (Secrets 설정을 확인하세요)")
     return False
 
 # 데이터 저장하기 (Commit)
@@ -114,6 +118,7 @@ def commit_data():
     if conn:
         try:
             with st.spinner("클라우드에 저장 중..."):
+                # 데이터 업데이트
                 conn.update(data=st.session_state.inventory)
                 st.success("🚀 구글 시트 저장이 완료되었습니다!")
         except Exception as e:
