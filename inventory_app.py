@@ -50,9 +50,15 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- 데이터 관리 로직 ---
+# 구글 시트와 매핑할 표준 컬럼명 (사용자 엑셀 양식 기준)
+COL_SKU = 'SKU'
+COL_NAME = '상품명'
+COL_IMG = '이미지 URL'
+COL_QTY = '현재 재고'
+COL_DATE = '최근 수정일'
 
 if 'inventory' not in st.session_state:
-    st.session_state.inventory = pd.DataFrame(columns=['SKU', '상품명', '이미지URL', '현재재고', '최근수정일'])
+    st.session_state.inventory = pd.DataFrame(columns=[COL_SKU, COL_NAME, COL_IMG, COL_QTY, COL_DATE])
 
 def get_gsheets_config():
     if "connections" in st.secrets and "gsheets" in st.secrets.connections:
@@ -79,19 +85,23 @@ def fetch_data():
                 df = conn.read(ttl=0) 
                 if df is not None:
                     df = df.dropna(how='all')
+                    
+                    # 구글 시트의 헤더를 앱 표준 컬럼명으로 변환
                     rename_map = {
-                        'SKU': 'SKU', '상품명': '상품명',
-                        '이미지 URL': '이미지URL', '이미지URL': '이미지URL', '이미지 주소': '이미지URL',
-                        '초기 수량': '현재재고', '수량': '현재재고', '현재재고': '현재재고',
-                        '수정일': '최근수정일', '최근수정일': '최근수정일'
+                        'SKU': COL_SKU,
+                        '상품명': COL_NAME,
+                        '이미지 URL': COL_IMG, '이미지URL': COL_IMG, '이미지 주소': COL_IMG,
+                        '초기 수량': COL_QTY, '수량': COL_QTY, '현재 재고': COL_QTY, '현재재고': COL_QTY,
+                        '최근 수정일': COL_DATE, '최근수정일': COL_DATE, '수정일': COL_DATE
                     }
                     df = df.rename(columns=rename_map)
                     
-                    required_cols = ['SKU', '상품명', '이미지URL', '현재재고', '최근수정일']
+                    required_cols = [COL_SKU, COL_NAME, COL_IMG, COL_QTY, COL_DATE]
                     for col in required_cols:
-                        if col not in df.columns: df[col] = 0 if col == '현재재고' else ""
+                        if col not in df.columns:
+                            df[col] = 0 if col == COL_QTY else ""
                     
-                    df['현재재고'] = pd.to_numeric(df['현재재고'], errors='coerce').fillna(0).astype(int)
+                    df[COL_QTY] = pd.to_numeric(df[COL_QTY], errors='coerce').fillna(0).astype(int)
                     st.session_state.inventory = df[required_cols].copy()
                     st.toast("✅ 동기화 완료!")
                     return True
@@ -104,8 +114,11 @@ def commit_data():
     if conn:
         try:
             with st.spinner("클라우드에 저장 중..."):
+                # 현재 인벤토리 데이터를 구글 시트에 업데이트
                 conn.update(data=st.session_state.inventory)
                 st.success("🚀 구글 시트 저장이 완료되었습니다!")
+                time.sleep(1)
+                st.rerun()
         except Exception as e:
             st.error(f"저장 실패: {e}")
 
@@ -141,48 +154,46 @@ with tab_add:
         if st.form_submit_button("목록에 추가"):
             if f_sku and f_name:
                 new_row = pd.DataFrame([[f_sku, f_name, f_img, int(f_qty), datetime.now().strftime("%Y-%m-%d")]], 
-                                      columns=['SKU', '상품명', '이미지URL', '현재재고', '최근수정일'])
-                st.session_state.inventory = pd.concat([st.session_state.inventory, new_row], ignore_index=True).drop_duplicates('SKU', keep='last')
+                                      columns=[COL_SKU, COL_NAME, COL_IMG, COL_QTY, COL_DATE])
+                st.session_state.inventory = pd.concat([st.session_state.inventory, new_row], ignore_index=True).drop_duplicates(COL_SKU, keep='last')
                 st.success("추가됨. [최종 저장]을 눌러야 시트에 반영됩니다.")
 
 with tab_list:
     search = st.text_input("🔍 검색", "")
     view_df = st.session_state.inventory[
-        st.session_state.inventory['상품명'].astype(str).str.contains(search, case=False, na=False) |
-        st.session_state.inventory['SKU'].astype(str).str.contains(search, case=False, na=False)
+        st.session_state.inventory[COL_NAME].astype(str).str.contains(search, case=False, na=False) |
+        st.session_state.inventory[COL_SKU].astype(str).str.contains(search, case=False, na=False)
     ].reset_index(drop=True)
 
     if view_df.empty:
         st.info("데이터가 없습니다. [불러오기]를 눌러보세요.")
     else:
         for idx, row in view_df.iterrows():
-            real_idx = st.session_state.inventory.index[st.session_state.inventory['SKU'] == row['SKU']][0]
+            real_idx = st.session_state.inventory.index[st.session_state.inventory[COL_SKU] == row[COL_SKU]][0]
             with st.container():
-                # 삭제 버튼을 제거하고 레이아웃을 이미지(1), 정보(3), 컨트롤(2)로 조정
                 c_img, c_info, c_qty = st.columns([1, 3, 2])
                 
                 with c_img:
-                    url = row['이미지URL'] if '이미지URL' in row and pd.notna(row['이미지URL']) and row['이미지URL'] != "" else "https://via.placeholder.com/100"
+                    url = row[COL_IMG] if pd.notna(row[COL_IMG]) and row[COL_IMG] != "" else "https://via.placeholder.com/100"
                     st.image(url, width=100)
                 
                 with c_info:
-                    st.subheader(row['상품명'])
-                    st.caption(f"SKU: {row['SKU']} | 수정일: {row['최근수정일']}")
+                    st.subheader(row[COL_NAME])
+                    st.caption(f"SKU: {row[COL_SKU]} | 수정일: {row[COL_DATE]}")
                 
                 with c_qty:
-                    # 마이너스 버튼, 숫자, 플러스 버튼을 한 줄에 배치
                     q_col1, q_col2, q_col3 = st.columns([1, 1.5, 1])
                     with q_col1:
-                        if st.button("➖", key=f"down_{row['SKU']}", use_container_width=True):
-                            if row['현재재고'] > 0:
-                                st.session_state.inventory.at[real_idx, '현재재고'] -= 1
-                                st.session_state.inventory.at[real_idx, '최근수정일'] = datetime.now().strftime("%Y-%m-%d")
+                        if st.button("➖", key=f"down_{row[COL_SKU]}", use_container_width=True):
+                            if row[COL_QTY] > 0:
+                                st.session_state.inventory.at[real_idx, COL_QTY] -= 1
+                                st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
                                 st.rerun()
                     with q_col2:
-                        st.markdown(f'<div class="qty-text">{int(row["현재재고"])} 개</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="qty-text">{int(row[COL_QTY])} 개</div>', unsafe_allow_html=True)
                     with q_col3:
-                        if st.button("➕", key=f"up_{row['SKU']}", use_container_width=True):
-                            st.session_state.inventory.at[real_idx, '현재재고'] += 1
-                            st.session_state.inventory.at[real_idx, '최근수정일'] = datetime.now().strftime("%Y-%m-%d")
+                        if st.button("➕", key=f"up_{row[COL_SKU]}", use_container_width=True):
+                            st.session_state.inventory.at[real_idx, COL_QTY] += 1
+                            st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
                             st.rerun()
                 st.divider()
