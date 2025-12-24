@@ -43,37 +43,44 @@ with st.sidebar:
     if uploaded_file:
         try:
             if uploaded_file.name.endswith('xlsx'):
-                df_upload = pd.read_excel(uploaded_file)
+                # openpyxl 설치 여부에 따른 예외 처리 추가
+                try:
+                    df_upload = pd.read_excel(uploaded_file, engine='openpyxl')
+                except ImportError:
+                    st.error("❌ 엑셀(.xlsx) 파일을 읽기 위해 'openpyxl' 라이브러리가 필요합니다.")
+                    st.info("💡 해결 방법: 'requirements.txt' 파일에 'openpyxl'을 추가하거나, 파일을 **CSV 형식**으로 저장하여 업로드해주세요.")
+                    df_upload = None
             else:
                 df_upload = pd.read_csv(uploaded_file)
             
-            # 사용자 양식 헤더를 프로그램 규격으로 매핑
-            rename_map = {
-                'SKU': 'SKU',
-                '상품명': '상품명',
-                '이미지 URL': '이미지URL',
-                '이미지URL': '이미지URL',
-                '초기 수량': '현재재고',
-                '초기수량': '현재재고',
-                '현재재고': '현재재고',
-                '수량': '현재재고'
-            }
-            
-            # 존재하는 컬럼만 변경
-            df_upload = df_upload.rename(columns=rename_map)
-            
-            # 필수 컬럼 확인 및 기본값 채우기
-            if '최근수정일' not in df_upload.columns:
-                df_upload['최근수정일'] = datetime.now().strftime("%Y-%m-%d")
-            if '이미지URL' not in df_upload.columns:
-                df_upload['이미지URL'] = ""
-            
-            # 필요한 컬럼만 추출하여 합치기
-            target_cols = ['SKU', '상품명', '이미지URL', '현재재고', '최근수정일']
-            df_final = df_upload[df_upload.columns.intersection(target_cols)]
-            
-            st.session_state.inventory = pd.concat([st.session_state.inventory, df_final], ignore_index=True).drop_duplicates('SKU', keep='last')
-            st.success(f"성공적으로 {len(df_final)}개의 품목을 업데이트했습니다!")
+            if df_upload is not None:
+                # 사용자 양식 헤더를 프로그램 규격으로 매핑
+                rename_map = {
+                    'SKU': 'SKU',
+                    '상품명': '상품명',
+                    '이미지 URL': '이미지URL',
+                    '이미지URL': '이미지URL',
+                    '초기 수량': '현재재고',
+                    '초기수량': '현재재고',
+                    '현재재고': '현재재고',
+                    '수량': '현재재고'
+                }
+                
+                # 존재하는 컬럼만 변경
+                df_upload = df_upload.rename(columns=rename_map)
+                
+                # 필수 컬럼 확인 및 기본값 채우기
+                if '최근수정일' not in df_upload.columns:
+                    df_upload['최근수정일'] = datetime.now().strftime("%Y-%m-%d")
+                if '이미지URL' not in df_upload.columns:
+                    df_upload['이미지URL'] = ""
+                
+                # 필요한 컬럼만 추출하여 합치기
+                target_cols = ['SKU', '상품명', '이미지URL', '현재재고', '최근수정일']
+                df_final = df_upload[df_upload.columns.intersection(target_cols)]
+                
+                st.session_state.inventory = pd.concat([st.session_state.inventory, df_final], ignore_index=True).drop_duplicates('SKU', keep='last')
+                st.success(f"성공적으로 {len(df_final)}개의 품목을 업데이트했습니다!")
         except Exception as e:
             st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
 
