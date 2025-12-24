@@ -184,10 +184,14 @@ with tab_list:
 
             c_img, c_info, c_ctrl = st.columns([1, 3, 2])
             with c_img:
-                st.image(
-                    row[COL_IMG] if row[COL_IMG] else "https://via.placeholder.com/120",
-                    width=100
-                )
+                img = row.get(COL_IMG, "")
+                img = str(img).strip()
+
+                if not img or img.lower() == "nan":
+                    img = "https://via.placeholder.com/120"
+
+                st.image(img, width=100)
+
 
             with c_info:
                 st.subheader(row[COL_NAME])
