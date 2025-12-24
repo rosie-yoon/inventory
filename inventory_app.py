@@ -9,11 +9,10 @@ try:
 except ImportError:
     GSheetsConnection = None
 
-# 1. 페이지 설정
+# 1. 페이지 설정 (사이드바 제거)
 st.set_page_config(
     page_title="재고 관리 시스템", 
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    layout="wide"
 )
 
 # 2. 스타일 및 UI 설정
@@ -23,17 +22,23 @@ st.markdown("""
     .stNumberInput div div input { font-weight: bold; }
     .sync-box {
         background-color: #ffffff;
-        padding: 20px;
+        padding: 25px;
         border-radius: 15px;
         border: 1px solid #e2e8f0;
-        margin-bottom: 20px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        margin-bottom: 25px;
+        box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
     }
     .status-badge {
-        font-size: 11px;
-        padding: 4px 12px;
+        font-size: 12px;
+        padding: 6px 14px;
         border-radius: 20px;
         font-weight: bold;
+        display: inline-block;
+        margin-bottom: 10px;
+    }
+    /* 사이드바 숨기기 */
+    [data-testid="stSidebar"] {
+        display: none;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -44,45 +49,80 @@ st.markdown("""
 if 'inventory' not in st.session_state:
     st.session_state.inventory = pd.DataFrame(columns=['SKU', '상품명', '이미지URL', '현재재고', '최근수정일'])
 
-if 'conn' not in st.session_state:
-    st.session_state.conn = None
+# 구글 시트 연결 여부 확인 함수 (개선됨)
+def is_gsheets_configured():
+    # 1. Top-level 'gsheets' 키 확인
+    if "gsheets" in st.secrets:
+        return True
+    # 2. [connections.gsheets] 계층 구조 확인
+    if "connections" in st.secrets and "gsheets" in st.secrets.connections:
+        return True
+    return False
 
 # 구글 시트 연결 시도
 def get_connection():
-    if GSheetsConnection and "gsheets" in st.secrets:
-        return st.connection("gsheets", type=GSheetsConnection)
+    if not GSheetsConnection:
+        st.error("❌ 'streamlit-gsheets' 라이브러리가 설치되지 않았습니다.")
+        return None
+    
+    if is_gsheets_configured():
+        try:
+            # 스트림릿 연결 시도
+            return st.connection("gsheets", type=GSheetsConnection)
+        except Exception as e:
+            st.error(f"연결 생성 중 오류 발생: {e}")
+            return None
     return None
 
 # 데이터 불러오기 (Fetch)
 def fetch_data():
     conn = get_connection()
     if conn:
-        try:
-            # 구글 시트의 첫 번째 워크시트를 읽어옵니다.
-            df = conn.read(ttl="0") 
-            st.session_state.inventory = df.copy()
-            st.toast("✅ 구글 시트에서 최신 데이터를 가져왔습니다!")
-        except Exception as e:
-            st.error(f"데이터 불러오기 실패: {e}")
+        with st.spinner("구글 시트에서 데이터를 불러오는 중..."):
+            try:
+                # 연결 설정에서 URL을 찾지 못할 경우를 대비해 명시적 확인 가능
+                df = conn.read(ttl="0") 
+                if df is not None:
+                    # 데이터 전처리 (빈 행 제거 및 컬럼 확인)
+                    df = df.dropna(how='all')
+                    st.session_state.inventory = df.copy()
+                    st.toast("✅ 구글 시트에서 최신 데이터를 가져왔습니다!")
+                    return True
+            except Exception as e:
+                st.error(f"데이터를 읽어오는 데 실패했습니다: {e}")
+                st.info("💡 구글 시트가 '링크가 있는 모든 사용자에게 편집자' 권한으로 공유되어 있는지 확인해주세요.")
     else:
-        st.warning("⚠️ 구글 시트 연결 설정(Secrets)이 필요합니다.")
+        st.error("❌ 구글 시트 연결 설정을 찾을 수 없습니다.")
+        st.markdown("""
+        **해결 방법:**
+        1. 배포된 앱의 **Settings > Secrets**에 아래 내용을 붙여넣으세요:
+        ```toml
+        [connections.gsheets]
+        spreadsheet = "사용자님의_구글시트_URL"
+        ```
+        2. `public_gsheets_url` 대신 `spreadsheet` 키를 사용해 보세요.
+        """)
+    return False
 
 # 데이터 저장하기 (Commit)
 def commit_data():
     conn = get_connection()
     if conn:
-        try:
-            conn.update(data=st.session_state.inventory)
-            st.toast("🚀 구글 시트에 모든 변경사항이 저장되었습니다!")
-            st.success("동기화 완료!")
-        except Exception as e:
-            st.error(f"데이터 저장 실패: {e}")
+        with st.spinner("구글 시트에 저장 중..."):
+            try:
+                # 현재 인벤토리 데이터를 구글 시트에 업데이트
+                conn.update(data=st.session_state.inventory)
+                st.toast("🚀 모든 변경사항이 저장되었습니다!")
+                st.success("동기화 완료!")
+            except Exception as e:
+                st.error(f"데이터 저장 실패: {e}")
+                st.info("💡 구글 시트에 쓰기 권한이 필요합니다. '편집자' 권한 공유를 확인하세요.")
     else:
-        st.error("연결 정보가 없어 클라우드에 저장할 수 없습니다.")
+        st.error("❌ 연결 정보가 없어 저장할 수 없습니다.")
 
 # --- 메인 화면 ---
 st.title("🍎 스마트 재고 동기화 시스템")
-st.caption("구글 시트를 기반으로 모든 기기의 재고를 실시간 관리하세요.")
+st.caption("구글 시트를 기반으로 모든 기기의 재고를 통합 관리합니다.")
 
 # 상단 동기화 제어판
 with st.container():
@@ -90,60 +130,62 @@ with st.container():
     c_sync1, c_sync2, c_sync3 = st.columns([2, 1, 1])
     
     with c_sync1:
-        st.subheader("🔄 데이터 동기화")
-        if GSheetsConnection and "gsheets" in st.secrets:
-            st.markdown('<span class="status-badge" style="background:#dcfce7; color:#166534;">연결됨: Google Sheets</span>', unsafe_allow_html=True)
+        st.subheader("🔄 실시간 데이터 동기화")
+        if is_gsheets_configured():
+            st.markdown('<span class="status-badge" style="background:#dcfce7; color:#166534;">● 클라우드 연결됨 (Google Sheets)</span>', unsafe_allow_html=True)
         else:
-            st.markdown('<span class="status-badge" style="background:#fee2e2; color:#991b1b;">연결 안 됨: 임시 모드</span>', unsafe_allow_html=True)
+            st.markdown('<span class="status-badge" style="background:#fee2e2; color:#991b1b;">● 오프라인 모드 (설정 확인 필요)</span>', unsafe_allow_html=True)
     
     with c_sync2:
-        if st.button("📥 시트에서 불러오기", use_container_width=True):
-            fetch_data()
-            st.rerun()
+        if st.button("📥 시트 데이터 불러오기", use_container_width=True):
+            if fetch_data():
+                time.sleep(1)
+                st.rerun()
             
     with c_sync3:
-        if st.button("💾 시트에 최종 저장", type="primary", use_container_width=True):
+        if st.button("💾 변경사항 시트 저장", type="primary", use_container_width=True):
             commit_data()
     st.markdown('</div>', unsafe_allow_html=True)
 
 # 탭 메뉴
-tab_list, tab_add = st.tabs(["📊 재고 관리", "➕ 새 상품 등록"])
+tab_list, tab_add = st.tabs(["📊 재고 현황 및 관리", "➕ 신규 상품 등록"])
 
 with tab_add:
-    st.subheader("신규 상품 추가")
+    st.subheader("📦 신규 상품 추가")
     with st.form("add_form", clear_on_submit=True):
         col_f1, col_f2 = st.columns(2)
-        new_sku = col_f1.text_input("SKU (코드)")
+        new_sku = col_f1.text_input("SKU (상품 코드)")
         new_name = col_f2.text_input("상품명")
-        new_img = st.text_input("이미지 URL (직접 링크)")
+        new_img = st.text_input("이미지 URL")
         new_qty = st.number_input("현재 재고 수량", min_value=0, step=1)
         
-        if st.form_submit_button("재고 목록에 임시 추가"):
+        if st.form_submit_button("목록에 임시 추가"):
             if new_sku and new_name:
                 new_row = pd.DataFrame([[new_sku, new_name, new_img, new_qty, datetime.now().strftime("%Y-%m-%d")]], 
                                       columns=['SKU', '상품명', '이미지URL', '현재재고', '최근수정일'])
                 st.session_state.inventory = pd.concat([st.session_state.inventory, new_row], ignore_index=True).drop_duplicates('SKU', keep='last')
-                st.success(f"'{new_name}'이 목록에 추가되었습니다. 상단의 [시트에 최종 저장]을 눌러야 반영됩니다.")
+                st.success(f"'{new_name}'이 목록에 추가되었습니다. 상단의 [변경사항 시트 저장]을 눌러야 반영됩니다.")
+            else:
+                st.warning("SKU와 상품명은 필수 입력 사항입니다.")
 
 with tab_list:
-    search = st.text_input("🔍 검색 (명칭/SKU)", "")
+    search = st.text_input("🔍 검색 (명칭 또는 SKU)", "")
+    
     view_df = st.session_state.inventory[
-        st.session_state.inventory['상품명'].str.contains(search, case=False, na=False) |
-        st.session_state.inventory['SKU'].str.contains(search, case=False, na=False)
+        st.session_state.inventory['상품명'].astype(str).str.contains(search, case=False, na=False) |
+        st.session_state.inventory['SKU'].astype(str).str.contains(search, case=False, na=False)
     ].reset_index(drop=True)
 
     if view_df.empty:
-        st.info("데이터가 없습니다. [시트에서 불러오기]를 누르거나 새 상품을 등록하세요.")
+        st.info("표시할 데이터가 없습니다. 상단의 [불러오기] 버튼을 누르거나 상품을 등록하세요.")
     else:
-        # 지표
         m1, m2, m3 = st.columns(3)
-        m1.metric("총 품목", f"{len(view_df)}개")
-        m2.metric("전체 수량", f"{int(view_df['현재재고'].sum()):,}개")
-        m3.metric("재고 부족", f"{len(view_df[view_df['현재재고'] < 5])}건")
+        m1.metric("총 품목 수", f"{len(view_df)}개")
+        m2.metric("전체 재고 합계", f"{int(view_df['현재재고'].sum()):,}개")
+        m3.metric("재고 부족 알림", f"{len(view_df[view_df['현재재고'] < 5])}건", delta_color="inverse")
         
         st.divider()
 
-        # 리스트 렌더링
         for idx, row in view_df.iterrows():
             real_idx = st.session_state.inventory.index[st.session_state.inventory['SKU'] == row['SKU']][0]
             with st.container():
@@ -167,14 +209,13 @@ with tab_list:
                             st.session_state.inventory.at[real_idx, '최근수정일'] = datetime.now().strftime("%Y-%m-%d")
                             st.rerun()
                 with c_btn:
-                    if st.button("🗑️", key=f"del_{row['SKU']}"):
+                    st.write("")
+                    if st.button("🗑️ 삭제", key=f"del_{row['SKU']}"):
                         st.session_state.inventory = st.session_state.inventory.drop(real_idx)
                         st.rerun()
                 st.divider()
 
-# 사이드바 설정 도움말
-with st.sidebar:
-    st.header("⚙️ 연결 설정")
-    st.write("구글 시트와 연결하려면 Streamlit Cloud의 Secrets 설정에 시트 URL을 등록해야 합니다.")
-    if st.button("설정 가이드 보기"):
-        st.info("1. 구글 시트를 만들고 '링크가 있는 모든 사용자에게 편집 허용'으로 설정하세요.\n2. 앱 설정의 Secrets 칸에 해당 URL을 입력하세요.")
+    if not st.session_state.inventory.empty:
+        st.write("---")
+        csv_data = st.session_state.inventory.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("현재 목록 CSV 다운로드", data=csv_data, file_name=f"inventory_backup.csv", mime="text/csv")
