@@ -36,12 +36,15 @@ st.markdown("""
         display: inline-block;
         margin-bottom: 10px;
     }
-    .qty-text {
-        font-size: 1.6rem;
-        font-weight: bold;
-        min-width: 80px;
-        text-align: center;
-        color: #1e293b;
+    /* 입력창 디자인 조정 */
+    div[data-testid="stNumberInput"] {
+        margin-top: -5px;
+    }
+    div[data-testid="stNumberInput"] input {
+        font-size: 1.2rem !important;
+        font-weight: bold !important;
+        text-align: center !important;
+        color: #1e293b !important;
     }
     [data-testid="stSidebar"], [data-testid="stSidebarNav"] { display: none; }
     section[data-testid="stSidebar"] { width: 0px !important; }
@@ -80,7 +83,7 @@ def fetch_data():
                     # 헤더 청소 (공백 제거)
                     df.columns = [str(c).strip() for c in df.columns]
                     
-                    # 헤더 유연하게 매핑 (띄어쓰기 있는 '이미지 URL' 등 대응)
+                    # 헤더 유연하게 매핑
                     mapping = {
                         '이미지 URL': COL_IMG, '이미지주소': COL_IMG,
                         '현재 재고': COL_QTY, '수량': COL_QTY, '재고': COL_QTY
@@ -118,7 +121,7 @@ def commit_data():
 
 # --- 메인 화면 ---
 st.title("🍎 스마트 재고 관리 (Cloud)")
-st.caption("INPUT 시트 원본을 읽고, 수정한 결과를 OUTPUT 시트에 기록합니다.")
+st.caption("수량을 직접 입력하거나 버튼으로 조절하세요. 변경 후 OUTPUT 저장을 잊지 마세요!")
 
 # 제어판
 with st.container():
@@ -159,28 +162,47 @@ else:
 
     for idx, row in view_df.iterrows():
         try:
+            # 원본 데이터프레임의 인덱스 찾기
             real_idx = st.session_state.inventory.index[st.session_state.inventory[COL_SKU] == row[COL_SKU]][0]
+            
             with st.container():
                 c_img, c_info, c_qty = st.columns([1, 3, 2.5])
                 with c_img:
                     url = str(row[COL_IMG]).strip()
-                    # Shopee 이미지 서버 주소(cf.shopee.sg) 지원 및 에러 방지
                     final_url = url if url.startswith('http') else "https://via.placeholder.com/150?text=No+Image"
                     st.image(final_url, width=120)
+                
                 with c_info:
                     st.subheader(row[COL_NAME])
                     st.caption(f"SKU: {row[COL_SKU]} | 최근수정: {row[COL_DATE]}")
+                
                 with c_qty:
                     st.write("") 
-                    q_col1, q_col2, q_col3 = st.columns([1, 1.5, 1])
+                    q_col1, q_col2, q_col3 = st.columns([1, 2, 1])
+                    
                     with q_col1:
                         if st.button("➖", key=f"down_{row[COL_SKU]}", use_container_width=True):
                             if row[COL_QTY] > 0:
                                 st.session_state.inventory.at[real_idx, COL_QTY] -= 1
                                 st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
                                 st.rerun()
+                    
                     with q_col2:
-                        st.markdown(f'<div class="qty-text">{int(row[COL_QTY])}</div>', unsafe_allow_html=True)
+                        # 수량 직접 입력 (Number Input)
+                        current_val = int(row[COL_QTY])
+                        new_qty = st.number_input(
+                            label="수량 입력",
+                            min_value=0,
+                            value=current_val,
+                            key=f"input_{row[COL_SKU]}",
+                            label_visibility="collapsed"
+                        )
+                        # 값이 변경되었을 때만 업데이트 및 리런
+                        if new_qty != current_val:
+                            st.session_state.inventory.at[real_idx, COL_QTY] = new_qty
+                            st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
+                            st.rerun()
+                            
                     with q_col3:
                         if st.button("➕", key=f"up_{row[COL_SKU]}", use_container_width=True):
                             st.session_state.inventory.at[real_idx, COL_QTY] += 1
