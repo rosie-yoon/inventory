@@ -36,15 +36,17 @@ st.markdown("""
         display: inline-block;
         margin-bottom: 10px;
     }
-    /* 입력창 디자인 조정 */
+    /* 입력창 디자인 조정: 버튼 제거 후 단독 사용 시 최적화 */
     div[data-testid="stNumberInput"] {
-        margin-top: -5px;
+        max-width: 150px;
+        margin-left: auto;
     }
     div[data-testid="stNumberInput"] input {
-        font-size: 1.2rem !important;
+        font-size: 1.3rem !important;
         font-weight: bold !important;
         text-align: center !important;
         color: #1e293b !important;
+        height: 45px !important;
     }
     [data-testid="stSidebar"], [data-testid="stSidebarNav"] { display: none; }
     section[data-testid="stSidebar"] { width: 0px !important; }
@@ -79,30 +81,21 @@ def fetch_data():
                 df = conn.read(worksheet="INPUT", ttl=0)
                 if df is not None:
                     df = df.dropna(how='all')
-                    
-                    # 헤더 청소 (공백 제거)
                     df.columns = [str(c).strip() for c in df.columns]
-                    
-                    # 헤더 유연하게 매핑
                     mapping = {
                         '이미지 URL': COL_IMG, '이미지주소': COL_IMG,
                         '현재 재고': COL_QTY, '수량': COL_QTY, '재고': COL_QTY
                     }
                     df = df.rename(columns=mapping)
-
-                    # 부족한 컬럼 채우기
                     for col in REQUIRED_COLS:
                         if col not in df.columns:
                             df[col] = 0 if col == COL_QTY else ""
-                    
-                    # 데이터 타입 보정
                     df[COL_QTY] = pd.to_numeric(df[COL_QTY], errors='coerce').fillna(0).astype(int)
                     st.session_state.inventory = df[REQUIRED_COLS].copy()
                     st.toast("✅ INPUT 데이터를 성공적으로 불러왔습니다!")
                     return True
         except Exception as e:
             st.error(f"불러오기 실패: {e}")
-            st.info("💡 구글 시트에 'INPUT' 워크시트(탭)가 있는지 확인하세요.")
     return False
 
 def commit_data():
@@ -117,11 +110,10 @@ def commit_data():
                 st.rerun()
         except Exception as e:
             st.error(f"저장 실패: {e}")
-            st.info("💡 구글 시트에 'OUTPUT' 워크시트(탭)가 있는지 확인하세요.")
 
 # --- 메인 화면 ---
 st.title("🍎 스마트 재고 관리 (Cloud)")
-st.caption("수량을 직접 입력하거나 버튼으로 조절하세요. 변경 후 OUTPUT 저장을 잊지 마세요!")
+st.caption("수정된 재고는 즉시 반영되며, 마지막에 'OUTPUT 저장' 버튼을 눌러 확정하세요.")
 
 # 제어판
 with st.container():
@@ -139,7 +131,7 @@ with st.container():
             commit_data()
     st.markdown('</div>', unsafe_allow_html=True)
 
-# 화면 구성
+# 검색창
 search = st.text_input("🔍 품명 또는 SKU 검색", "")
 df = st.session_state.inventory
 
@@ -154,7 +146,6 @@ else:
 if view_df.empty:
     st.info("데이터가 없습니다. [INPUT 불러오기]를 눌러주세요.")
 else:
-    # 지표 요약
     m1, m2 = st.columns(2)
     m1.metric("총 품목 수", f"{len(view_df)}개")
     m2.metric("전체 재고 합계", f"{int(view_df[COL_QTY].sum()):,}개")
@@ -162,52 +153,35 @@ else:
 
     for idx, row in view_df.iterrows():
         try:
-            # 원본 데이터프레임의 인덱스 찾기
             real_idx = st.session_state.inventory.index[st.session_state.inventory[COL_SKU] == row[COL_SKU]][0]
             
             with st.container():
-                c_img, c_info, c_qty = st.columns([1, 3, 2.5])
+                c_img, c_info, c_qty = st.columns([1, 4, 1.5]) # 레이아웃 조정
                 with c_img:
                     url = str(row[COL_IMG]).strip()
                     final_url = url if url.startswith('http') else "https://via.placeholder.com/150?text=No+Image"
-                    st.image(final_url, width=120)
+                    st.image(final_url, width=100)
                 
                 with c_info:
                     st.subheader(row[COL_NAME])
                     st.caption(f"SKU: {row[COL_SKU]} | 최근수정: {row[COL_DATE]}")
                 
                 with c_qty:
-                    st.write("") 
-                    q_col1, q_col2, q_col3 = st.columns([1, 2, 1])
+                    # 수량 직접 입력창만 단독 배치
+                    current_val = int(row[COL_QTY])
+                    new_qty = st.number_input(
+                        label=f"qty_{row[COL_SKU]}",
+                        min_value=0,
+                        value=current_val,
+                        step=1,
+                        key=f"input_{row[COL_SKU]}",
+                        label_visibility="collapsed"
+                    )
                     
-                    with q_col1:
-                        if st.button("➖", key=f"down_{row[COL_SKU]}", use_container_width=True):
-                            if row[COL_QTY] > 0:
-                                st.session_state.inventory.at[real_idx, COL_QTY] -= 1
-                                st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
-                                st.rerun()
-                    
-                    with q_col2:
-                        # 수량 직접 입력 (Number Input)
-                        current_val = int(row[COL_QTY])
-                        new_qty = st.number_input(
-                            label="수량 입력",
-                            min_value=0,
-                            value=current_val,
-                            key=f"input_{row[COL_SKU]}",
-                            label_visibility="collapsed"
-                        )
-                        # 값이 변경되었을 때만 업데이트 및 리런
-                        if new_qty != current_val:
-                            st.session_state.inventory.at[real_idx, COL_QTY] = new_qty
-                            st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
-                            st.rerun()
-                            
-                    with q_col3:
-                        if st.button("➕", key=f"up_{row[COL_SKU]}", use_container_width=True):
-                            st.session_state.inventory.at[real_idx, COL_QTY] += 1
-                            st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
-                            st.rerun()
+                    if new_qty != current_val:
+                        st.session_state.inventory.at[real_idx, COL_QTY] = new_qty
+                        st.session_state.inventory.at[real_idx, COL_DATE] = datetime.now().strftime("%Y-%m-%d")
+                        st.rerun()
                 st.divider()
         except Exception:
             continue
